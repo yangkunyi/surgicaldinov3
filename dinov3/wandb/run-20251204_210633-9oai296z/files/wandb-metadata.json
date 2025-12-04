@@ -1,0 +1,46 @@
+{
+  "os":  "Linux-6.2.0-39-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.11.14",
+  "startedAt":  "2025-12-04T13:06:33.229916Z",
+  "args":  [
+    "--config-file",
+    "dinov3/configs/vitb_full_config.yaml",
+    "--output-dir",
+    "./results/test"
+  ],
+  "program":  "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/dinov3/train/train.py",
+  "codePath":  "dinov3/dinov3/train/train.py",
+  "codePathLocal":  "dinov3/train/train.py",
+  "git":  {
+    "remote":  "git@github.com:yangkunyi/surgicaldinov3.git",
+    "commit":  "05990479a58de8be15e5da4cf232ef59fa4bf7b5"
+  },
+  "email":  "yangkunyi@sjtu.edu.cn",
+  "root":  "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3",
+  "host":  "byta6000i0",
+  "executable":  "/bd_byta6000i0/users/surgicaldinov2/miniforge3/envs/da3/bin/python",
+  "cpu_count":  128,
+  "cpu_count_logical":  256,
+  "gpu":  "NVIDIA RTX A6000",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "1926521425920",
+      "used":  "45606375424"
+    }
+  },
+  "memory":  {
+    "total":  "270230806528"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA RTX A6000",
+      "memoryTotal":  "51527024640",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-309d6756-f641-f0c6-0046-f23b47854b8e"
+    }
+  ],
+  "cudaVersion":  "12.3",
+  "writerId":  "e5hc0de3glsuhse1o5tppsde2a3sjtjf"
+}

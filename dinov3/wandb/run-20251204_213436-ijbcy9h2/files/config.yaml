@@ -1,0 +1,264 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            34eb7clgq1jn4zy08z149gzvuv7xjcad:
+                args:
+                    - --config-file
+                    - dinov3/configs/vitb_full_config.yaml
+                    - --output-dir
+                    - ./results/test
+                codePath: dinov3/dinov3/train/train.py
+                codePathLocal: dinov3/train/train.py
+                cpu_count: 128
+                cpu_count_logical: 256
+                cudaVersion: "12.3"
+                disk:
+                    /:
+                        total: "1926521425920"
+                        used: "45606395904"
+                email: yangkunyi@sjtu.edu.cn
+                executable: /bd_byta6000i0/users/surgicaldinov2/miniforge3/envs/da3/bin/python
+                git:
+                    commit: 05990479a58de8be15e5da4cf232ef59fa4bf7b5
+                    remote: git@github.com:yangkunyi/surgicaldinov3.git
+                gpu: NVIDIA RTX A6000
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10752
+                      memoryTotal: "51527024640"
+                      name: NVIDIA RTX A6000
+                      uuid: GPU-309d6756-f641-f0c6-0046-f23b47854b8e
+                host: byta6000i0
+                memory:
+                    total: "270230806528"
+                os: Linux-6.2.0-39-generic-x86_64-with-glibc2.35
+                program: /bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/dinov3/train/train.py
+                python: CPython 3.11.14
+                root: /bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3
+                startedAt: "2025-12-04T13:34:36.186024Z"
+                writerId: 34eb7clgq1jn4zy08z149gzvuv7xjcad
+        m: []
+        python_version: 3.11.14
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 16
+            "4": 3.11.14
+            "5": 0.23.1
+            "12": 0.23.1
+            "13": linux-x86_64
+MODEL:
+    value:
+        DEVICE: cuda
+        DTYPE: float32
+        META_ARCHITECTURE: SSLMetaArch
+        WEIGHTS: ""
+checkpointing:
+    value:
+        keep_every: 99999999999999999
+        max_to_keep: 3
+        period: 3750
+compute_precision:
+    value:
+        param_dtype: bf16
+        reduce_dtype: fp32
+        sharding_strategy: SHARD_GRAD_OP
+crops:
+    value:
+        global_crops_scale:
+            - 0.32
+            - 1
+        global_crops_size: 256
+        global_local_crop_pairs_ratios: 1
+        gram_teacher_crops_size: null
+        gram_teacher_no_distortions: false
+        horizontal_flips: true
+        local_crops_number: 8
+        local_crops_scale:
+            - 0.05
+            - 0.32
+        local_crops_size: 112
+        localcrops_subset_of_globalcrops: false
+        rgb_mean:
+            - 0.485
+            - 0.456
+            - 0.406
+        rgb_std:
+            - 0.229
+            - 0.224
+            - 0.225
+        share_color_jitter: false
+        teacher_to_student_resolution_scale: 1
+dino:
+    value:
+        force_weight_norm: false
+        global_ignore_diagonal: true
+        head_bottleneck_dim: 256
+        head_hidden_dim: 2048
+        head_n_prototypes: 65536
+        head_nlayers: 3
+        head_norm_last_layer: false
+        koleo_distributed_loss_group_data: true
+        koleo_distributed_loss_group_size: null
+        koleo_distributed_replicas: 0
+        koleo_loss_distributed: false
+        koleo_loss_weight: 0.1
+        koleo_topk: 1
+        local_loss_weight_schedule:
+            end: 0.5
+            peak: 0.5
+            start: 0.5
+            warmup_epochs: 0
+        loss_weight: 1
+        reweight_dino_local_loss: false
+distillation:
+    value:
+        checkpoint_path: ""
+        enabled: false
+        full_cfg_path: ""
+evaluation:
+    value:
+        config_files:
+            high_freq: benchmark_high_frequency.yaml
+            low_freq: benchmark_low_frequency.yaml
+        eval_period_iterations: 12500
+        low_freq_every: 5
+gram:
+    value:
+        ckpt: null
+        compute_stats: false
+        ema_teacher: false
+        global_teacher_resize_antialias: false
+        global_teacher_resize_method: bicubic
+        img_level: false
+        it_first_update: 0
+        it_load_ema_teacher: -1
+        loss_weight: 1
+        loss_weight_schedule: null
+        max_updates: null
+        normalized: true
+        remove_neg: false
+        remove_only_teacher_neg: false
+        rep_update: true
+        tokens_used: all
+        update_frequency: 50000
+        use_loss: false
+hrft:
+    value:
+        checkpoint_path: ""
+        enabled: false
+ibot:
+    value:
+        force_masking_even_with_zero_weight: false
+        head_bottleneck_dim: 256
+        head_hidden_dim: 2048
+        head_n_prototypes: 65536
+        head_nlayers: 3
+        head_norm_last_layer: false
+        loss_weight: 1
+        mask_random_circular_shift: false
+        mask_ratio_min_max:
+            - 0.1
+            - 0.5
+        mask_sample_probability: 0.5
+        separate_head: true
+multidistillation:
+    value:
+        enabled: false
+optim:
+    value:
+        adamw_beta1: 0.9
+        adamw_beta2: 0.999
+        clip_grad: 3
+        dino_head_wd_multiplier: 1
+        dump_fsdp_weights_path: ""
+        epochs: 100
+        freeze_last_layer_epochs: 1
+        layerwise_decay: 0.9
+        lr: 0.001
+        min_lr: 1e-06
+        multi_tensor_optim: true
+        optimizer: adamw
+        patch_embed_lr_mult: 0.2
+        scaling_rule: sqrt_wrt_1024
+        schedule_trunc_extra: 0
+        warmup_epochs: 10
+        weight_decay: 0.04
+        weight_decay_end: 0.4
+student:
+    value:
+        arch: vit_base
+        drop_path_rate: 0.1
+        ffn_bias: true
+        ffn_layer: mlp
+        ffn_ratio: 4
+        fp8_enabled: false
+        fp8_filter: blocks
+        in_chans: 3
+        layerscale: 1e-05
+        mask_k_bias: false
+        n_storage_tokens: 0
+        norm_layer: layernorm
+        patch_drop: 0
+        patch_size: 16
+        pos_embed_rope_base: 100
+        pos_embed_rope_dtype: bf16
+        pos_embed_rope_jitter_coords: null
+        pos_embed_rope_max_period: null
+        pos_embed_rope_min_period: null
+        pos_embed_rope_normalize_coords: separate
+        pos_embed_rope_rescale_coords: null
+        pos_embed_rope_shift_coords: null
+        pos_embed_type: rope
+        pretrained_weights: /bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+        proj_bias: true
+        qkv_bias: true
+        resume_from_teacher_chkpt: ""
+        untie_cls_and_patch_norms: false
+        untie_global_and_local_cls_norm: false
+teacher:
+    value:
+        final_momentum_teacher: 1
+        in_chans: 3
+        momentum_teacher: 0.992
+        teacher_temp: 0.07
+        warmup_teacher_temp: 0.04
+        warmup_teacher_temp_epochs: 30
+train:
+    value:
+        OFFICIAL_EPOCH_LENGTH: 1250
+        batch_size_per_gpu: 64
+        cache_dataset: true
+        cell_augmentation: false
+        cell_augmentation_type: hpa
+        centering: sinkhorn_knopp
+        checkpointing: false
+        checkpointing_full: false
+        chunk_schedule: []
+        compile: true
+        cudagraphs: false
+        data_config: null
+        dataset_path: Cholec80:split=TRAIN
+        learn_from_teacher_tokens: false
+        monitor_gradient_norm: false
+        num_workers: 10
+        output_dir: /bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/results/test
+        saveckp_freq: 20
+        seed: 0
+        sharded_eval_checkpoint: false
+        use_teacher_head: true
+wandb:
+    value:
+        enabled: true
+        entity: ""
+        group: ""
+        project: dinov3
+        run_name: ""
+        tags: []

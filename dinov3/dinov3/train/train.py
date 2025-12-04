@@ -392,6 +392,12 @@ def do_train(cfg, model, resume=False):
     ckpt_dir = Path(cfg.train.output_dir, "ckpt").expanduser()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # All Weights & Biases run artifacts are stored under a dedicated logs/
+    # subdirectory of the training output directory to keep runs organized.
+    wandb_log_dir = Path(cfg.train.output_dir).expanduser() / "logs"
+    if distributed.is_main_process():
+        wandb_log_dir.mkdir(parents=True, exist_ok=True)
+
     model.train()
 
     # Initialize Weights & Biases logging from the config on the main process
@@ -419,6 +425,8 @@ def do_train(cfg, model, resume=False):
         wandb_init_kwargs = {
             "project": project,
             "config": full_cfg_dict,
+            # Direct Weights & Biases to store run data under logs/.
+            "dir": str(wandb_log_dir),
         }
         if run_name is not None:
             wandb_init_kwargs["name"] = run_name

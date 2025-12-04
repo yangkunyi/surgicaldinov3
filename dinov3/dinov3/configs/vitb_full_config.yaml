@@ -67,7 +67,7 @@ gram:
   loss_weight_schedule: null  # (dict): If not None, use a schedule for the loss weight instead of `loss_weight`
 train:
   batch_size_per_gpu: 64
-  dataset_path: ImageNet:split=TRAIN
+  dataset_path: Cholec80:root=/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/cholec80/shards/shard-{000001..000046}.tar
   data_config: null
   output_dir: /checkpoint/dino/qas/rope/vitb16_im1k
   saveckp_freq: 20
@@ -100,7 +100,7 @@ student:
   drop_path_rate: 0.1
   layerscale: 1.0e-05
   patch_drop: 0.0
-  pretrained_weights: '/bd_byta6000i0/users/surgicaldinov2/kyyang/dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth'
+  pretrained_weights: '/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth'
   ffn_layer: "mlp"
   ffn_ratio: 4.0
   resume_from_teacher_chkpt: ""
@@ -167,8 +167,8 @@ crops:
   local_crops_scale:
   - 0.05
   - 0.32
-  global_crops_size: 224
-  local_crops_size: 96
+  global_crops_size: 256
+  local_crops_size: 112
   global_local_crop_pairs_ratios: 1.0
   gram_teacher_crops_size: null  # If not None, return crops for gram teacher
   localcrops_subset_of_globalcrops: false
