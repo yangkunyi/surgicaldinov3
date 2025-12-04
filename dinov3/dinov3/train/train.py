@@ -397,7 +397,7 @@ def do_train(cfg, model, resume=False):
     wandb_log_dir = Path(cfg.train.output_dir).expanduser() / "logs"
     if distributed.is_main_process():
         wandb_log_dir.mkdir(parents=True, exist_ok=True)
-
+d
     model.train()
 
     # Initialize Weights & Biases logging from the config on the main process
