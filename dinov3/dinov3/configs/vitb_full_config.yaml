@@ -104,7 +104,7 @@ student:
   ffn_layer: "mlp"
   ffn_ratio: 4.0
   resume_from_teacher_chkpt: ""
-  qkv_bias: true
+  qkv_bias: false
   proj_bias: true
   ffn_bias: true
   norm_layer: "layernorm"

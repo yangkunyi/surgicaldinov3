@@ -79,6 +79,11 @@ class DataAugmentationDINO(object):
             ]
         )
 
+        self.resize_patch_to_14 = v2.Resize(
+            global_crop_max_size // 16 * 14,
+            interpolation=v2.InterpolationMode.BICUBIC,
+        )
+
         resize_global = nn.Identity()  # Resize transform applied to global crops after random crop
         self.resize_global_post_transf = (
             nn.Identity()
@@ -155,12 +160,8 @@ class DataAugmentationDINO(object):
             self.global_transfo2 = v2.Compose([resize_global, global_transfo2_extra, self.normalize])
             self.local_transfo = v2.Compose([local_transfo_extra, self.normalize])
         else:
-            self.global_transfo1 = v2.Compose(
-                [resize_global, color_jittering, global_transfo1_extra, self.normalize]
-            )
-            self.global_transfo2 = v2.Compose(
-                [resize_global, color_jittering, global_transfo2_extra, self.normalize]
-            )
+            self.global_transfo1 = v2.Compose([resize_global, color_jittering, global_transfo1_extra, self.normalize])
+            self.global_transfo2 = v2.Compose([resize_global, color_jittering, global_transfo2_extra, self.normalize])
             self.local_transfo = v2.Compose([color_jittering, local_transfo_extra, self.normalize])
 
     def __call__(self, image):
@@ -180,6 +181,11 @@ class DataAugmentationDINO(object):
         global_crop_2 = self.resize_global_post_transf(global_crop_2_transf)
 
         output["global_crops"] = [global_crop_1, global_crop_2]
+
+        output["global_crops_clean"] = [
+            self.normalize(self.resize_patch_to_14(im1_base)),
+            self.normalize(self.resize_patch_to_14(im2_base)),
+        ]
 
         # global crops for teacher:
         if self.teacher_no_color_jitter:
