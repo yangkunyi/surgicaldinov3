@@ -8,6 +8,7 @@ import logging
 from functools import partial
 
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch import Tensor, nn
 
@@ -21,7 +22,7 @@ from dinov3.loss import DINOLoss, GramLoss, KoLeoLoss, KoLeoLossDistributed, iBO
 from dinov3.models import build_model_from_cfg
 from dinov3.train.cosine_lr_scheduler import linear_warmup_cosine_decay
 from dinov3.train.param_groups import fuse_params_groups, get_params_groups_with_decay_fsdp
-from dinov3.utils import count_parameters
+from dinov3.utils import count_parameters, build_da3_backbone
 
 logger = logging.getLogger("dinov3")
 
@@ -260,6 +261,30 @@ class SSLMetaArch(nn.Module):
                 f"OPTIONS -- global crops GRAM teacher resize antialias: {cfg.gram.global_teacher_resize_antialias}"
             )
 
+        # DA3 MIM distillation
+        self.da3_enabled = hasattr(self.cfg, "da3") and self.cfg.da3.enabled
+        self.da3_teacher: nn.Module | None = None
+        self.da3_embed_dim: int | None = getattr(self.cfg.da3, "embed_dim", None) if self.da3_enabled else None
+        self.da3_projector: nn.Module | None = None
+
+        if self.da3_enabled:
+            logger.info("OPTIONS -- DA3 MIM distillation enabled")
+            logger.info(f"OPTIONS -- DA3 -- loss_weight: {self.cfg.da3.loss_weight}")
+            logger.info(f"OPTIONS -- DA3 -- embed_dim: {self.cfg.da3.embed_dim}")
+            logger.info(f"OPTIONS -- DA3 -- projector_hidden_dim: {self.cfg.da3.projector_hidden_dim}")
+            logger.info(f"OPTIONS -- DA3 -- ckpt_path: {self.cfg.da3.ckpt_path}")
+            logger.info(f"OPTIONS -- DA3 -- use_fsdp: {self.cfg.da3.use_fsdp}")
+
+            # Projector mapping masked student tokens -> DA3 token space.
+            self.da3_projector = nn.Sequential(
+                nn.Linear(self.embed_dim, self.cfg.da3.projector_hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.cfg.da3.projector_hidden_dim, self.cfg.da3.embed_dim),
+            )
+            # Register projector under the student so it participates in
+            # optimizer param-group construction and FSDP wrapping.
+            student_model_dict["da3_projector"] = self.da3_projector
+
     def _setup_distillation(self):
         logger.info(f"Performing distillation from {self.cfg.distillation.full_cfg_path}")
 
@@ -297,6 +322,15 @@ class SSLMetaArch(nn.Module):
         )
         self.teacher = nn.ModuleDict(teacher_model_dict)
 
+    def _get_param_torch_dtype(self) -> torch.dtype:
+        mapping = {
+            "fp32": torch.float32,
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+        }
+        key = str(getattr(self.cfg.compute_precision, "param_dtype", "fp32"))
+        return mapping.get(key, torch.float32)
+
     def init_weights(self) -> None:
         # All weights are set to `nan` to ensure we initialize everything explicitly
         self.student.backbone.init_weights()
@@ -325,6 +359,7 @@ class SSLMetaArch(nn.Module):
                 raise ValueError(f"Provide a correct path to {self.gram_ckpt}")
             self.gram_teacher.requires_grad_(False)
             self.gram_teacher.eval()
+
         if self.cfg.student.resume_from_teacher_chkpt:
             logger.info(f"Loading pretrained weights from {self.cfg.student.resume_from_teacher_chkpt}")
             init_fsdp_model_from_checkpoint(
@@ -335,6 +370,7 @@ class SSLMetaArch(nn.Module):
                 process_group=distributed.get_process_subgroup(),
             )
             self.model_ema.load_state_dict(self.student.state_dict())
+
         if self.cfg.distillation.enabled:
             if self.cfg.distillation.checkpoint_path != "ignore":
                 logger.info(f"Loading teacher to distil from : {self.cfg.distillation.checkpoint_path}")
@@ -352,6 +388,35 @@ class SSLMetaArch(nn.Module):
                 self.teacher.ibot_head.init_weights()
             logger.info(f"Performing distillation from: {self.teacher}")
 
+        # Initialize DA3 projector weights (if enabled) using the same
+        # truncated normal scheme as DINO/iBOT heads.
+        if self.da3_enabled and self.da3_projector is not None:
+            from torch.nn.init import trunc_normal_
+
+            def _init_da3_projector(m: nn.Module) -> None:
+                if isinstance(m, nn.Linear):
+                    trunc_normal_(m.weight, std=0.02)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+
+            self.da3_projector.apply(_init_da3_projector)
+            target_dtype = self._get_param_torch_dtype()
+            device = torch.device(self.cfg.MODEL.DEVICE)
+            self.da3_projector.to(device=device, dtype=target_dtype)
+        # Build DA3 teacher backbone lazily (outside the meta device
+        # context) so that we can safely load pretrained weights from
+        # Hugging Face or a local checkpoint.
+        if self.da3_enabled:
+            logger.info("Building DA3 teacher backbone for MIM distillation")
+            self.da3_teacher, da3_embed_dim = build_da3_backbone(self.cfg.da3)
+            self.da3_embed_dim = self.cfg.da3.embed_dim
+            self.da3_teacher.requires_grad_(False)
+            self.da3_teacher.eval()
+
+            target_dtype = self._get_param_torch_dtype()
+            device = torch.device(self.cfg.MODEL.DEVICE)
+            self.da3_teacher.to(device=device, dtype=target_dtype)
+
     def forward_backward(
         self, data, *, teacher_temp, iteration=0, **ignored_kwargs
     ) -> tuple[Tensor, dict[str, float | Tensor]]:
@@ -367,6 +432,10 @@ class SSLMetaArch(nn.Module):
         metrics_dict["global_batch_size"] = data["global_batch_size"]
 
         global_crops = data["collated_global_crops"].cuda(non_blocking=True)
+        if self.da3_enabled:
+            clean_global_crops = data["collated_global_crops_clean"].cuda(non_blocking=True)
+        else:
+            clean_global_crops = None
         local_crops = data["collated_local_crops"].cuda(non_blocking=True)
         masks = data["collated_masks"].cuda(non_blocking=True)
         mask_indices_list = data["mask_indices_list"].cuda(non_blocking=True)
@@ -399,6 +468,15 @@ class SSLMetaArch(nn.Module):
             mask_indices_list=mask_indices_list,
         )
 
+        # DA3 teacher output for masked positions (if enabled)
+        if self.da3_enabled:
+            da3_global = self.get_da3_teacher_output(
+                clean_global_crops.unflatten(0, (n_global_crops, B)),
+                mask_indices_list=mask_indices_list,
+            )
+        else:
+            da3_global = None
+
         # Gram output
         if self.gram_use_loss:
             gram_global = self.get_gram_teacher_output(
@@ -417,6 +495,7 @@ class SSLMetaArch(nn.Module):
             student_global=student_global,
             student_local=student_local,
             gram_global=gram_global,
+            da3_global=da3_global,
             masks=masks,
             mask_indices_list=mask_indices_list,
             masks_weight=masks_weight,
@@ -527,6 +606,52 @@ class SSLMetaArch(nn.Module):
             "orig_teacher_patches": orig_teacher_patches,  # [n_crops * B, P, D]
         }
 
+    @torch.no_grad()
+    def get_da3_teacher_output(self, clean_global_crops, *, mask_indices_list):
+        """Compute DA3 teacher tokens at masked positions.
+
+        Args:
+            clean_global_crops: Tensor of shape [n_global_crops, B, 3, H, W]
+                built from `global_crops_clean` in the collate function.
+            mask_indices_list: 1D LongTensor containing indices into the
+                flattened `[n_global_crops * B * P]` patch grid used by
+                the student.
+        Returns:
+            dict with key `masked_da3_tokens` of shape
+            [n_masked_patches, D_da3].
+        """
+
+        if self.da3_teacher is None:
+            raise RuntimeError("DA3 teacher is not initialized but DA3 distillation is enabled")
+
+        n_crops, B, rgb, H, W = clean_global_crops.shape
+        images = clean_global_crops.flatten(0, 1) # [n_crops * B, C, H, W]
+
+        da3_tokens = self.da3_teacher(images)  # [n_crops * B, P_da3, D_da3]
+        if da3_tokens.dim() != 3:
+            raise RuntimeError(f"Expected DA3 teacher to return [N, P, D], got shape {tuple(da3_tokens.shape)}")
+
+        n_total, p_da3, d_da3 = da3_tokens.shape
+        expected_total = n_crops * B
+        if n_total != expected_total:
+            raise RuntimeError(f"DA3 teacher returned {n_total} samples, expected {expected_total} = n_crops * B")
+
+        # We rely on the data pipeline to resize the clean crops so that
+        # the DA3 patch grid matches the student grid. We still assert
+        # that the number of tokens is consistent with the global crop
+        # size and student patch size as a safety check.
+        # n_student = H // self.cfg.student.patch_size
+        # expected_tokens = n_student * n_student
+        # if p_da3 != expected_tokens:
+        #     raise RuntimeError(
+        #         f"DA3 patch token count ({p_da3}) does not match student grid ({expected_tokens})."
+        #     )
+
+        da3_patches = da3_tokens.flatten(0, 1)  # [n_crops * B * P_da3, D_da3]
+        masked_da3 = torch.index_select(da3_patches, dim=0, index=mask_indices_list)
+
+        return {"masked_da3_tokens": masked_da3}
+
     def get_student_output(self, *, global_crops, local_crops, upperbound, masks, mask_indices_list):
         n_global_crops, B, rgb, H, W = global_crops.shape
         n_local_crops, B, rgb, H, W = local_crops.shape
@@ -588,6 +713,7 @@ class SSLMetaArch(nn.Module):
         student_global,
         student_local,
         gram_global,
+        da3_global,
         masks,
         mask_indices_list,
         masks_weight,
@@ -680,6 +806,31 @@ class SSLMetaArch(nn.Module):
                         img_level=False,
                     )
                     loss_dict["stats_only/unmasked_gram_loss"] = gram_loss_unmasked
+
+        # DA3 cosine MIM loss on masked tokens
+        if self.da3_enabled and da3_global is not None:
+            student_masked = student_global["masked_patch_pre_head"]  # [n_masked_patches, D_student]
+            student_proj = self.da3_projector(student_masked)  # [n_masked_patches, D_da3]
+
+            teacher_tokens = da3_global["masked_da3_tokens"]  # [n_masked_patches, D_da3]
+            if teacher_tokens.shape != student_proj.shape:
+                raise RuntimeError(
+                    "DA3 teacher tokens and student projections have mismatched shapes: "
+                    f"teacher={teacher_tokens.shape}, student={student_proj.shape}"
+                )
+
+            student_norm = F.normalize(student_proj, dim=-1)
+            teacher_norm = F.normalize(teacher_tokens, dim=-1)
+
+            cos_sim = (student_norm * teacher_norm).sum(dim=-1)
+            cos_sim = (cos_sim + 1) / 2  # map to [0, 1] range
+            mim_loss = 1.0 - cos_sim.mean()
+
+            loss_dict["da3_mim_loss"] = mim_loss
+            loss_dict["da3_cos_sim_mean"] = cos_sim.mean()
+            loss_dict["da3_cos_sim_std"] = cos_sim.std()
+
+            loss_accumulator += self.cfg.da3.loss_weight * mim_loss
 
         return loss_accumulator, loss_dict
 

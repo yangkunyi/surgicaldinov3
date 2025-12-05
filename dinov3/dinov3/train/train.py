@@ -397,18 +397,14 @@ def do_train(cfg, model, resume=False):
     wandb_log_dir = Path(cfg.train.output_dir).expanduser() / "logs"
     if distributed.is_main_process():
         wandb_log_dir.mkdir(parents=True, exist_ok=True)
-d
+
     model.train()
 
     # Initialize Weights & Biases logging from the config on the main process
     # only so that distributed training does not create one run per rank.
     wandb_run = None
     wandb_cfg = cfg.wandb
-    use_wandb = bool(
-        wandb is not None
-        and wandb_cfg.enabled
-        and distributed.is_main_process()
-    )
+    use_wandb = bool(wandb is not None and wandb_cfg.enabled and distributed.is_main_process())
     if use_wandb:
         project = wandb_cfg.project or "dinov3"
 

@@ -129,7 +129,7 @@ teacher:
   final_momentum_teacher: 1
   warmup_teacher_temp: 0.04
   teacher_temp: 0.07
-  warmup_teacher_temp_epochs: 30
+  warmup_teacher_temp_epochs: 3
   in_chans: 3
 distillation:  # teacher
   enabled: false
@@ -141,12 +141,12 @@ hrft:  # non-hrft'd student
   enabled: false
   checkpoint_path: ""  # teacher_checkpoint path
 optim:
-  epochs: 100
+  epochs: 10
   optimizer: adamw
   weight_decay: 0.04
   weight_decay_end: 0.4
   lr: 0.001
-  warmup_epochs: 10
+  warmup_epochs: 1
   min_lr: 1.0e-06
   schedule_trunc_extra: 0.0  # Compute the schedule for (1 + schedule_trunc_extra) steps and truncate, .25 is a good choice
   clip_grad: 3.0
@@ -185,7 +185,7 @@ crops:
   - 0.225
   teacher_to_student_resolution_scale: 1.0
 evaluation:
-  eval_period_iterations: 12500
+  eval_period_iterations: 1250
   low_freq_every: 5
   config_files:  # Must be in fairvit/eval/configs
     high_freq: benchmark_high_frequency.yaml  # More often
@@ -194,6 +194,15 @@ checkpointing:
   period: 3750
   max_to_keep: 3
   keep_every: 99999999999999999  # Save a checkpoint every N iterations, regardless of max_to_keep and period
+
+
+da3:
+  enabled: true              # Turn on DA3 MIM distillation
+  loss_weight: 0.01          # Global weight for cosine distillation loss
+  embed_dim: 1536             # DA3 token dimension (da3-base uses ViT-B with cat_token=True -> 2 * 768)
+  projector_hidden_dim: 2048  # Hidden dim of student projector MLP
+  ckpt_path: ""              # HF repo id or local path for DA3 teacher checkpoint
+  use_fsdp: false   
 
 # Example of constant schedules with schedules v2
 # # schedules:

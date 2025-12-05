@@ -89,9 +89,23 @@ def get_batch_subset(collated_data_batch, divide_by):
     collated_global_crops = (
         collated_data_batch["collated_global_crops"].unflatten(0, (2, old_bs)).narrow(1, 0, target_bs).flatten(0, 1)
     )
+    if "collated_global_crops_clean" in collated_data_batch:
+        collated_global_crops_clean = (
+            collated_data_batch["collated_global_crops_clean"]
+            .unflatten(0, (2, old_bs))
+            .narrow(1, 0, target_bs)
+            .flatten(0, 1)
+        )
     collated_local_crops = (
         collated_data_batch["collated_local_crops"].unflatten(0, (-1, old_bs)).narrow(1, 0, target_bs).flatten(0, 1)
     )
+    if "collated_gram_teacher_crops" in collated_data_batch:
+        collated_gram_teacher_crops = (
+            collated_data_batch["collated_gram_teacher_crops"]
+            .unflatten(0, (2, old_bs))
+            .narrow(1, 0, target_bs)
+            .flatten(0, 1)
+        )
 
     masks_old_bs = collated_data_batch["collated_masks"].shape[0] // 2
     masks_target_bs = masks_old_bs // divide_by
@@ -122,6 +136,11 @@ def get_batch_subset(collated_data_batch, divide_by):
         "upperbound": upperbound,
         "n_masked_patches": torch.full((1,), fill_value=mask_indices_list.shape[0], dtype=torch.long),
     }
+
+    if "collated_global_crops_clean" in collated_data_batch:
+        new_batch["collated_global_crops_clean"] = collated_global_crops_clean
+    if "collated_gram_teacher_crops" in collated_data_batch:
+        new_batch["collated_gram_teacher_crops"] = collated_gram_teacher_crops
 
     if "global_batch_size" in collated_data_batch.keys():
         new_batch["global_batch_size"] = collated_data_batch["global_batch_size"] // divide_by
