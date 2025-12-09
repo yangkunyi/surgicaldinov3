@@ -1,0 +1,101 @@
+logs_root: "logs"
+n_gpus: 1
+seed: 321
+
+trainer:
+  # For iterable WebDataset training, drive the loop by steps rather than epochs.
+  max_steps: 12000
+  accelerator: gpu
+  devices: 1
+  precision: 32
+  log_every_n_steps: 50
+  accumulate_grad_batches: 1
+  # Run validation every N training steps (int -> steps, float -> fraction of epoch).
+  val_check_interval: 1000
+  # Number of validation batches to run each validation phase.
+  limit_val_batches: 100
+
+optimizer:
+  lr: 3e-4
+  beta1: 0.9
+  beta2: 0.99
+  weight_decay: 1.0e-4
+  gradient_clip: 35.0
+
+scheduler:
+  total_iter: 12000
+  type: WarmupOneCycleLR
+  final_div_factor: 1000.0
+  warmup_iters: 120
+  base_momentum: 0.85
+  max_momentum: 0.95
+
+data:
+  backend: "hdf5"  # or "hdf5" to use eval/depth/dataset.py
+  # Patterns are interpreted relative to the project root; they can be
+  # overridden on the command line if you place shards elsewhere.
+  train_shards: "data/SCARED/shards/shard-train-{000000..000068}.tar"
+  val_shards: "data/SCARED/shards/shard-val-{000000..000009}.tar"
+  num_workers: 8
+  batch_size: 16
+  # Shorter side fed to torchvision.transforms.Resize
+  image_size: 384
+  shuffle_buffer: 1000
+  # Depth range used to build the valid mask
+  min_depth: 0.1
+  max_depth: 150.0
+
+  # Optional HDF5 configuration (used when backend == "hdf5")
+  h5_path: "/bd_byta6000i0/users/surgical_depth/SCARED_fixed/scared.hdf5"
+  train_datasets: [1,2,3,4,5,6,7]
+  val_datasets: [8,9]
+  input_size: 384
+
+model:
+  backbone:
+    # Local dinov3 repo used by torch.hub (relative to project root).
+    repo_dir: "dinov3"
+    hub_name: "dinov3_vitb16"
+    pretrained_weights_path: "dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+    # Fine-tuned teacher checkpoint; adjust to your run if needed.
+    trained_checkpoint: "dinov3/results/test/eval/training_2499/teacher_checkpoint.pth"
+    layer_indices: [5, 7, 9, 11]
+    patch_start_idx: 0
+
+  head:
+    # DPT configuration; dim_in will be overridden to match backbone.embed_dim.
+    dim_in: 768
+    patch_size: 16
+    output_dim: 1
+    activation: "exp"
+    conf_activation: "expp1"
+    features: 128
+    out_channels: [96, 192, 384, 768]
+    pos_embed: false
+    down_ratio: 1
+    head_name: "depth"
+    use_sky_head: false
+    sky_name: "sky"
+    sky_activation: "relu"
+    use_ln_for_heads: false
+    norm_type: "idt"
+    fusion_block_inplace: false
+
+loss:
+  warm_up: false
+  warm_iter: 100
+
+wandb:
+  project: "surgical-dinov3-depth"
+  entity: null
+  run_name: "scared_dinov3_dpt"
+  tags: ["SCARED", "dinov3", "depth"]
+  log_model: false
+
+hydra:
+  run:
+    # Hydra outputs (configs, logs) go under logs/hydra/<timestamp>
+    dir: ${logs_root}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    # Do not change the working directory; keep paths relative to project root.
+    chdir: false
