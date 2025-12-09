@@ -87,7 +87,7 @@ class Cholec80(IterableDataset):
         super().__init__()
         # Base WebDataset pipeline: read shards, decode images, local shuffle,
         # and keep only the JPEG field as `(image,)`.
-        ds = wds.WebDataset(root, shardshuffle=shardshuffle)
+        ds = wds.WebDataset(root, shardshuffle=shardshuffle, resampled=True)
         ds = ds.decode("pil").shuffle(shuffle_buffer).to_tuple("jpg","__key__")
 
         # If a transform is provided, integrate it into the WebDataset pipeline
