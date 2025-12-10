@@ -51,7 +51,6 @@ def _decode_depth_bytes(depth_bytes: bytes) -> np.ndarray:
     return np.load(io.BytesIO(depth_bytes))
 
 
-
 def _make_image_transform(image_size: int) -> T.Compose:
     """Return RGB image transform using torchvision v2 transforms.
 
@@ -78,7 +77,9 @@ def _make_depth_transform(image_size: int) -> T.Compose:
     """
 
     size = int(image_size)
-    return T.Resize(size, interpolation=T.InterpolationMode.NEAREST)
+    return T.Resize(size, interpolation=T.InterpolationMode.BILINEAR)
+
+
 class ScaredDepthDataModule(pl.LightningDataModule):
     """LightningDataModule for depth supervision on SCARED WebDataset shards.
 
@@ -100,16 +101,19 @@ class ScaredDepthDataModule(pl.LightningDataModule):
         self._val_ds = None
 
         logger.info(
-            "ScaredDepthDataModule initialized (train_shards=%s, val_shards=%s, image_size=%s)",
-            self.cfg.train_shards,
-            self.cfg.val_shards,
-            self.cfg.image_size,
+            f"ScaredDepthDataModule initialized (train_shards={self.cfg.train_shards}, "
+            f"val_shards={self.cfg.val_shards}, image_size={self.cfg.image_size})"
         )
 
     def _build_dataset(self, shards_pattern: str, *, is_train: bool) -> wds.WebDataset:
-        logger.info("Building %s WebDataset from pattern: %s", "train" if is_train else "val", shards_pattern)
-        img_transform = self.train_image_transform if is_train else self.val_image_transform
-        depth_transform = self.train_depth_transform if is_train else self.val_depth_transform
+        phase = "train" if is_train else "val"
+        logger.info(f"Building {phase} WebDataset from pattern: {shards_pattern}")
+        img_transform = (
+            self.train_image_transform if is_train else self.val_image_transform
+        )
+        depth_transform = (
+            self.train_depth_transform if is_train else self.val_depth_transform
+        )
 
         def _decode_depth(sample: Dict[str, Any]) -> Dict[str, Any]:
             sample["depth"] = _decode_depth_bytes(sample["depth"])
@@ -121,15 +125,11 @@ class ScaredDepthDataModule(pl.LightningDataModule):
 
             # Depth map: keep as raw numeric values, only resize spatially
             depth_arr = np.asarray(sample["depth"])
-            if depth_arr.ndim == 3:
-                # If 3 channels, assume last channel stores depth (Z)
-                depth_arr = depth_arr[..., -1]
-
-            depth_t = torch.from_numpy(depth_arr).float().unsqueeze(0)  # [1, H, W]
+            depth_t = torch.from_numpy(depth_arr).float()
             depth_t = depth_transform(depth_t).squeeze(0)  # [H, W]
-
-            valid_mask = (depth_t >= self.cfg.min_depth) & (depth_t <= self.cfg.max_depth)
-
+            valid_mask = (depth_t >= self.cfg.min_depth) & (
+                depth_t <= self.cfg.max_depth
+            )
             return {
                 "image": img_t,
                 "depth": depth_t,
@@ -137,7 +137,7 @@ class ScaredDepthDataModule(pl.LightningDataModule):
             }
 
         dataset = (
-            wds.WebDataset(shards_pattern, shardshuffle=is_train, resampled=True)
+            wds.WebDataset(shards_pattern, resampled=True)
             .decode("pil")
             .map(_decode_depth)
             .map(_to_tensors)
@@ -155,12 +155,16 @@ class ScaredDepthDataModule(pl.LightningDataModule):
     def setup(self, stage: Optional[str] = None) -> None:  # type: ignore[override]
         if stage in (None, "fit"):
             if self._train_ds is None:
-                self._train_ds = self._build_dataset(self.cfg.train_shards, is_train=True)
+                self._train_ds = self._build_dataset(
+                    self.cfg.train_shards, is_train=True
+                )
             if self._val_ds is None:
                 self._val_ds = self._build_dataset(self.cfg.val_shards, is_train=False)
 
     def train_dataloader(self) -> DataLoader:  # type: ignore[override]
-        assert self._train_ds is not None, "DataModule.setup('fit') must be called before train_dataloader()"
+        assert self._train_ds is not None, (
+            "DataModule.setup('fit') must be called before train_dataloader()"
+        )
         return DataLoader(
             self._train_ds,
             batch_size=self.cfg.batch_size,
@@ -169,7 +173,9 @@ class ScaredDepthDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:  # type: ignore[override]
-        assert self._val_ds is not None, "DataModule.setup('fit') must be called before val_dataloader()"
+        assert self._val_ds is not None, (
+            "DataModule.setup('fit') must be called before val_dataloader()"
+        )
         return DataLoader(
             self._val_ds,
             batch_size=self.cfg.batch_size,

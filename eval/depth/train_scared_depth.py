@@ -28,6 +28,7 @@ from lightning.pytorch.loggers import WandbLogger
 from .data_scared import ScaredDepthDataModule
 from .dataset import DepthDataModule
 from .pl_module import DinoDPTDepthModule
+import sys
 
 
 @hydra.main(config_path="configs", config_name="scared_depth", version_base=None)
@@ -40,21 +41,25 @@ def main(cfg: DictConfig) -> None:
     # Avoid duplicate sinks if this is called multiple times (e.g. in tests)
     logger.remove()
     logger.add(log_path, level="INFO", enqueue=True, backtrace=True, diagnose=True)
-
+    logger.add(sys.stdout, level="INFO", enqueue=True, backtrace=True, diagnose=True)
     # Pretty-print the resolved config for quick inspection
-    logger.info("Starting SCARED depth training with config:\n{}", OmegaConf.to_yaml(cfg))
+    logger.info(
+        "Starting SCARED depth training with config:\n{}", OmegaConf.to_yaml(cfg)
+    )
 
     pl.seed_everything(cfg.seed)
 
     # ---------------------- build data module ----------------------
     backend = getattr(cfg.data, "backend", "webdataset")
-    logger.info("Using data backend: %s", backend)
+    logger.info(f"Using data backend: {backend}")
     if backend == "webdataset":
         datamodule = ScaredDepthDataModule(cfg.data)
     elif backend == "hdf5":
         datamodule = DepthDataModule(cfg)
     else:
-        raise ValueError(f"Unsupported data.backend '{backend}', expected 'webdataset' or 'hdf5'.")
+        raise ValueError(
+            f"Unsupported data.backend '{backend}', expected 'webdataset' or 'hdf5'."
+        )
 
     # ---------------------- build model ----------------------------
     model = DinoDPTDepthModule(

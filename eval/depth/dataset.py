@@ -70,17 +70,17 @@ class DepthH5Dataset(Dataset):
                     self.index.append((ds_group, kf, fr))
 
         logger.info(
-            "DepthH5Dataset initialized from %s with datasets %s (%d frames)",
-            self.h5_path,
-            self.datasets,
-            len(self.index),
+            f"DepthH5Dataset initialized from {self.h5_path} "
+            f"with datasets {self.datasets} ({len(self.index)} frames)"
         )
 
         # Build transforms; if input_size is None, skip resizing
         if input_size is None:
             self.transform = Compose(
                 [
-                    NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    NormalizeImage(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    ),
                     PrepareForNet(),
                 ]
             )
@@ -95,7 +95,9 @@ class DepthH5Dataset(Dataset):
                         ensure_multiple_of=16,
                         resize_method="lower_bound",
                     ),
-                    NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    NormalizeImage(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    ),
                     PrepareForNet(),
                 ]
             )
@@ -108,24 +110,33 @@ class DepthH5Dataset(Dataset):
         with h5py.File(self.h5_path, "r") as f:
             grp = f[ds_group][kf_group][fr]
             if "image" not in grp or "gt" not in grp:
-                raise KeyError(f"Expected 'image' and 'gt' datasets at '{ds_group}/{kf_group}/{fr}'.")
+                raise KeyError(
+                    f"Expected 'image' and 'gt' datasets at '{ds_group}/{kf_group}/{fr}'."
+                )
             img_np = grp["image"][...]
             depth_np = grp["gt"][...]
 
         if img_np.ndim != 3 or img_np.shape[-1] != 3:
-            raise ValueError(f"Unexpected image shape {img_np.shape} at '{ds_group}/{kf_group}/{fr}'.")
+            raise ValueError(
+                f"Unexpected image shape {img_np.shape} at '{ds_group}/{kf_group}/{fr}'."
+            )
         if depth_np.ndim not in (2, 3):
-            raise ValueError(f"Unexpected depth shape {depth_np.shape} at '{ds_group}/{kf_group}/{fr}'.")
+            raise ValueError(
+                f"Unexpected depth shape {depth_np.shape} at '{ds_group}/{kf_group}/{fr}'."
+            )
         if depth_np.ndim == 3:
             depth_np = depth_np[..., 0]
 
-        sample = {"image": img_np.astype(np.float32) / 255.0, "depth": depth_np.astype(np.float32)}
+        sample = {
+            "image": img_np.astype(np.float32) / 255.0,
+            "depth": depth_np.astype(np.float32),
+        }
         sample = self.transform(sample)
 
         image = torch.from_numpy(sample["image"])  # CHW float32
         depth = torch.from_numpy(sample["depth"])  # HW float32
         depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-        valid_mask = depth > 0
+        valid_mask = (depth > 0.1) & (depth < 150.0)
 
         return {
             "image": image,
@@ -152,7 +163,9 @@ class DepthDataModule(pl.LightningDataModule):
     @logger.catch(onerror=lambda _: sys.exit(1))
     def setup(self, stage: str | None = None) -> None:
         if stage in (None, "fit"):
-            logger.info("DepthDataModule.setup(stage=%s): building train/val datasets", stage)
+            logger.info(
+                f"DepthDataModule.setup(stage={stage}): building train/val datasets"
+            )
             self.train_ds = DepthH5Dataset(
                 h5_path=self.cfg.data.h5_path,
                 datasets=self.cfg.data.train_datasets,

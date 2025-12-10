@@ -28,6 +28,8 @@ import lightning as pl
 from .dpt import DPT
 from .loss import SigLoss
 from .metrics import mae, rmse, abs_rel
+
+
 class DinoDPTDepthModule(pl.LightningModule):
     """Lightning module wrapping frozen DINOv3 backbone + trainable DPT head.
 
@@ -63,7 +65,9 @@ class DinoDPTDepthModule(pl.LightningModule):
         self.scheduler_cfg = scheduler_cfg
         self.loss_cfg = loss_cfg
 
-        logger.info("Initialized DinoDPTDepthModule with backbone=%s", type(self.backbone_cfg).__name__)
+        logger.info(
+            f"Initialized DinoDPTDepthModule with backbone={type(self.backbone_cfg).__name__}"
+        )
 
         # --- build modules ---
         self.backbone = self._build_backbone(backbone_cfg)
@@ -89,7 +93,9 @@ class DinoDPTDepthModule(pl.LightningModule):
             fusion_block_inplace=head_cfg.fusion_block_inplace,
         )
 
-        self.loss_fn = SigLoss(warm_up=self.loss_cfg.warm_up, warm_iter=self.loss_cfg.warm_iter)
+        self.loss_fn = SigLoss(
+            warm_up=self.loss_cfg.warm_up, warm_iter=self.loss_cfg.warm_iter
+        )
 
         # Cache layer indices and patch offset for DPT
         self._layer_indices: Sequence[int] = tuple(backbone_cfg.layer_indices)
@@ -110,7 +116,9 @@ class DinoDPTDepthModule(pl.LightningModule):
         if not cfg.pretrained_weights_path:
             raise ValueError("pretrained_weights_path must be set in BackboneConfig")
 
-        logger.info("Loading DINOv3 backbone from repo_dir=%s hub_name=%s", cfg.repo_dir, cfg.hub_name)
+        logger.info(
+            f"Loading DINOv3 backbone from repo_dir={cfg.repo_dir} hub_name={cfg.hub_name}"
+        )
         backbone = torch.hub.load(
             cfg.repo_dir,
             cfg.hub_name,
@@ -119,7 +127,7 @@ class DinoDPTDepthModule(pl.LightningModule):
         )
 
         if cfg.trained_checkpoint:
-            logger.info("Loading trained checkpoint from %s", cfg.trained_checkpoint)
+            logger.info(f"Loading trained checkpoint from {cfg.trained_checkpoint}")
             state = torch.load(cfg.trained_checkpoint, map_location="cpu")
             teacher: Mapping[str, Tensor] | None = state.get("teacher")
             if teacher is None:
@@ -127,13 +135,18 @@ class DinoDPTDepthModule(pl.LightningModule):
 
             prefix = "backbone."
             new_state: "OrderedDict[str, Tensor]" = OrderedDict(
-                (k[len(prefix) :] if k.startswith(prefix) else k, v) for k, v in teacher.items()
+                (k[len(prefix) :] if k.startswith(prefix) else k, v)
+                for k, v in teacher.items()
             )
             missing, unexpected = backbone.load_state_dict(new_state, strict=False)
             if missing:
-                logger.warning("[DINOv3] Missing keys when loading teacher checkpoint: %s", list(missing)[:5])
+                logger.warning(
+                    f"[DINOv3] Missing keys when loading teacher checkpoint: {list(missing)[:5]}"
+                )
             if unexpected:
-                logger.warning("[DINOv3] Unexpected keys when loading teacher checkpoint: %s", list(unexpected)[:5])
+                logger.warning(
+                    f"[DINOv3] Unexpected keys when loading teacher checkpoint: {list(unexpected)[:5]}"
+                )
 
         return backbone
 
@@ -173,7 +186,9 @@ class DinoDPTDepthModule(pl.LightningModule):
         dpt_feats: List[List[Tensor]] = []
         for feat in feats_tokens:
             if feat.dim() != 3:
-                raise ValueError(f"Expected DINOv3 features of shape [B, N, C], got {tuple(feat.shape)}")
+                raise ValueError(
+                    f"Expected DINOv3 features of shape [B, N, C], got {tuple(feat.shape)}"
+                )
             B, N, C = feat.shape
             feat_bs1 = feat.unsqueeze(1)  # [B, 1, N, C]
             dpt_feats.append([feat_bs1])
@@ -194,7 +209,9 @@ class DinoDPTDepthModule(pl.LightningModule):
 
         # depth: [B, S, H_out, W_out] with S=1 -> squeeze sequence dim
         if depth.dim() != 4:
-            raise ValueError(f"Unexpected depth output shape {tuple(depth.shape)} (expected [B, S, H, W])")
+            raise ValueError(
+                f"Unexpected depth output shape {tuple(depth.shape)} (expected [B, S, H, W])"
+            )
         depth = depth[:, 0]  # [B, H_out, W_out]
         return depth
 
@@ -210,16 +227,56 @@ class DinoDPTDepthModule(pl.LightningModule):
         loss = self.loss_fn(depth_pred, depth_gt, valid_mask)
 
         # Loss: log every step for progress bar
-        self.log("train_loss", loss, on_step=True, prog_bar=True, batch_size=depth_pred.shape[0])
+        self.log(
+            "train/loss",
+            loss,
+            on_step=True,
+            prog_bar=True,
+            batch_size=depth_pred.shape[0],
+        )
 
         # Metrics: aggregate over epoch to avoid noisy per-step logs
         train_mae = mae(depth_pred, depth_gt, valid_mask)
         train_rmse = rmse(depth_pred, depth_gt, valid_mask)
         train_abs_rel = abs_rel(depth_pred, depth_gt, valid_mask)
 
-        self.log("train_mae", train_mae, on_step=True, on_epoch=True, batch_size=depth_pred.shape[0])
-        self.log("train_rmse", train_rmse, on_step=True, on_epoch=True, batch_size=depth_pred.shape[0])
-        self.log("train_abs_rel", train_abs_rel, on_step=True, on_epoch=True, batch_size=depth_pred.shape[0])
+        self.log(
+            "train/mae",
+            train_mae,
+            on_step=True,
+            on_epoch=True,
+            batch_size=depth_pred.shape[0],
+        )
+        self.log(
+            "train/rmse",
+            train_rmse,
+            on_step=True,
+            on_epoch=True,
+            batch_size=depth_pred.shape[0],
+        )
+        self.log(
+            "train/abs_rel",
+            train_abs_rel,
+            on_step=True,
+            on_epoch=True,
+            batch_size=depth_pred.shape[0],
+        )
+
+        # Log current learning rate for monitoring (first optimizer, first param group).
+        if self.trainer is not None and self.trainer.optimizers:
+            opt = self.trainer.optimizers[0]
+            # Optimizer may be wrapped (e.g., LightningOptimizer); get the underlying one if needed.
+            optim_obj = getattr(opt, "optimizer", opt)
+            lr = optim_obj.param_groups[0].get("lr")
+            if lr is not None:
+                self.log(
+                    "train/lr",
+                    lr,
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=False,
+                    batch_size=depth_pred.shape[0],
+                )
 
         return loss
 
@@ -236,13 +293,40 @@ class DinoDPTDepthModule(pl.LightningModule):
         val_rmse = rmse(depth_pred, depth_gt, valid_mask)
         val_abs_rel = abs_rel(depth_pred, depth_gt, valid_mask)
 
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, batch_size=depth_pred.shape[0])
-        self.log("val_mae", val_mae, on_step=False, on_epoch=True, prog_bar=False, batch_size=depth_pred.shape[0])
-        self.log("val_rmse", val_rmse, on_step=False, on_epoch=True, prog_bar=False, batch_size=depth_pred.shape[0])
-        self.log("val_abs_rel", val_abs_rel, on_step=False, on_epoch=True, prog_bar=False, batch_size=depth_pred.shape[0])
+        self.log(
+            "val/loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=depth_pred.shape[0],
+        )
+        self.log(
+            "val/mae",
+            val_mae,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            batch_size=depth_pred.shape[0],
+        )
+        self.log(
+            "val/rmse",
+            val_rmse,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            batch_size=depth_pred.shape[0],
+        )
+        self.log(
+            "val/abs_rel",
+            val_abs_rel,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            batch_size=depth_pred.shape[0],
+        )
 
         return loss
-
 
     def configure_optimizers(self):  # type: ignore[override]
         params = [p for p in self.parameters() if p.requires_grad]
@@ -253,7 +337,10 @@ class DinoDPTDepthModule(pl.LightningModule):
             weight_decay=self.optim_cfg.weight_decay,
         )
 
-        if self.scheduler_cfg is None or self.scheduler_cfg.type.lower() != "warmuponecyclelr":
+        if (
+            self.scheduler_cfg is None
+            or self.scheduler_cfg.type.lower() != "warmuponecyclelr"
+        ):
             return optimizer
         # Scheduler params are taken from the YAML ``scheduler`` section.
         total_steps = self.scheduler_cfg.total_iter
