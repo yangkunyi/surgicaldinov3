@@ -282,21 +282,48 @@ class DinoDPTDepthModule(pl.LightningModule):
 
     def validation_step(self, batch: Mapping[str, Any], batch_idx: int) -> Tensor:  # type: ignore[override]
         images: Tensor = batch["image"]
+
         depth_gt: Tensor = batch["depth"]
         valid_mask: Optional[Tensor] = batch.get("valid_mask")
-
         depth_pred = self(images)
-        
-        gt_median = torch.median(depth_gt[valid_mask])
-        pred_median = torch.median(depth_pred[valid_mask])
-        
-        ratio = gt_median / pred_median
+
+        if depth_pred.dim() == 3:
+            depth_pred = depth_pred.unsqueeze(1)
+            depth_gt = depth_gt.unsqueeze(1)
+            valid_mask = valid_mask.unsqueeze(1)
+
+        B, C, H, W = depth_pred.shape
+
+        # 2. 展平空间维度 [B, C*H*W]
+        pred_flat = depth_pred.reshape(B, -1).clone()
+        gt_flat = depth_gt.reshape(B, -1).clone()
+        mask_flat = valid_mask.reshape(B, -1)
+
+        # 3. 将无效像素设为 NaN (关键步骤)
+        # 这样 torch.nanmedian 就会自动忽略这些点
+        pred_flat[~mask_flat] = float("nan")
+        gt_flat[~mask_flat] = float("nan")
+
+        # 4. 计算中位数 (dim=1 表示沿着像素维度计算，保留 Batch 维度)
+        # .values 是因为 nanmedian 返回 (values, indices)
+        pred_median = torch.nanmedian(pred_flat, dim=1).values
+        gt_median = torch.nanmedian(gt_flat, dim=1).values
+
+        # 5. 计算比例 ratio: [B]
+        # 添加 1e-8 防止除零
+        ratio = gt_median / (pred_median + 1e-8)
+
+        # 处理可能的异常情况（如某张图全黑，导致 ratio 为 NaN）
+        ratio[torch.isnan(ratio)] = 1.0
+
+        # 6. 调整 ratio 维度以进行广播: [B] -> [B, 1, 1, 1]
+        ratio = ratio.view(B, 1, 1, 1)
+
         depth_pred_scaled = depth_pred * ratio
         depth_pred_scaled = torch.clamp(depth_pred_scaled, min=0.0001, max=150.0)
-        
+
         loss = self.loss_fn(depth_pred_scaled, depth_gt, valid_mask)
 
-        
         # Validation metrics aggregated over the full validation run
         val_mae = mae(depth_pred_scaled, depth_gt, valid_mask)
         val_rmse = rmse(depth_pred_scaled, depth_gt, valid_mask)
@@ -351,10 +378,23 @@ class DinoDPTDepthModule(pl.LightningModule):
             or self.scheduler_cfg.type.lower() != "warmuponecyclelr"
         ):
             return optimizer
-        # Scheduler params are taken from the YAML ``scheduler`` section.
-        total_steps = self.scheduler_cfg.total_iter
-        warmup_iters = self.scheduler_cfg.warmup_iters
-        pct_start = float(warmup_iters) / float(total_steps)
+
+        # Derive total number of optimization steps from the Trainer so that
+        # the schedule automatically tracks max_epochs / max_steps,
+        # dataloader length, gradient accumulation, etc.
+        if self.trainer is None:
+            raise RuntimeError(
+                "Trainer is not attached; cannot compute total steps for scheduler."
+            )
+
+        total_steps = int(self.trainer.estimated_stepping_batches)
+
+        # Warmup can be specified as a fraction of total steps, or as an
+        # absolute number of iterations for backward compatibility.
+        warmup_fraction = float(self.scheduler_cfg.warmup_fraction)
+        warmup_iters = int(total_steps * warmup_fraction)
+
+        pct_start = float(warmup_iters) / float(total_steps) if total_steps > 0 else 0.0
 
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,

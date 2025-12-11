@@ -62,6 +62,7 @@ class DepthH5Dataset(Dataset):
         self.h5_path = str(h5_path)
         self.datasets = list(datasets)
         self.index: List[Tuple[str, str, str]] = []  # (ds_group, keyframe_group, frame)
+        self.h5_file = None
 
         with h5py.File(self.h5_path, "r") as f:
             for ds in self.datasets:
@@ -106,15 +107,18 @@ class DepthH5Dataset(Dataset):
         return len(self.index)
 
     def __getitem__(self, i: int):
+        if self.h5_file is None:
+            self.h5_file = h5py.File(self.h5_path, "r")
+
         ds_group, kf_group, fr = self.index[i]
-        with h5py.File(self.h5_path, "r") as f:
-            grp = f[ds_group][kf_group][fr]
-            if "image" not in grp or "gt" not in grp:
-                raise KeyError(
-                    f"Expected 'image' and 'gt' datasets at '{ds_group}/{kf_group}/{fr}'."
-                )
-            img_np = grp["image"][...]
-            depth_np = grp["gt"][...]
+
+        grp = self.h5_file[ds_group][kf_group][fr]
+        if "image" not in grp or "gt" not in grp:
+            raise KeyError(
+                f"Expected 'image' and 'gt' datasets at '{ds_group}/{kf_group}/{fr}'."
+            )
+        img_np = grp["image"][...]
+        depth_np = grp["gt"][...]
 
         if img_np.ndim != 3 or img_np.shape[-1] != 3:
             raise ValueError(

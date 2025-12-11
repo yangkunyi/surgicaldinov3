@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 
 import hydra
+from hydra.utils import instantiate
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
@@ -84,18 +85,10 @@ def main(cfg: DictConfig) -> None:
     wandb_logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
 
     # ---------------------- Trainer -------------------------------
-    trainer = pl.Trainer(
-        default_root_dir=os.path.join(logs_root, "lightning"),
-        max_steps=cfg.trainer.max_steps,
-        accelerator=cfg.trainer.accelerator,
-        devices=cfg.trainer.devices,
-        precision=cfg.trainer.precision,
-        gradient_clip_val=cfg.optimizer.gradient_clip,
+    # Trainer and its callbacks (e.g. TQDMProgressBar) are fully defined in the Hydra config.
+    trainer = instantiate(
+        cfg.trainer,
         logger=wandb_logger,
-        log_every_n_steps=cfg.trainer.log_every_n_steps,
-        accumulate_grad_batches=cfg.trainer.accumulate_grad_batches,
-        val_check_interval=cfg.trainer.val_check_interval,
-        limit_val_batches=cfg.trainer.limit_val_batches,
     )
     logger.info("Trainer created. Starting fit().")
     trainer.fit(model, datamodule=datamodule)

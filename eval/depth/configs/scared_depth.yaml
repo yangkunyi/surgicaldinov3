@@ -3,17 +3,22 @@ n_gpus: 1
 seed: 42
 
 trainer:
+  _target_: lightning.pytorch.Trainer
   # For iterable WebDataset training, drive the loop by steps rather than epochs.
-  max_steps: 143500
+  max_epochs: 100
   accelerator: gpu
   devices: 1
   precision: 32
-  log_every_n_steps: 50
-  accumulate_grad_batches: 1
+  log_every_n_steps: 2
   # Run validation every N training steps (int -> steps, float -> fraction of epoch).
-  val_check_interval: 1000
+  val_check_interval: 1.0
   # Number of validation batches to run each validation phase.
-  limit_val_batches: 200
+  # Mirror previous Pycthon-side Trainer configuration
+  default_root_dir: "${logs_root}/lightning"
+  gradient_clip_val: ${optimizer.gradient_clip}
+  # Progress bar and other callbacks can be configured here
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.TQDMProgressBar
 
 optimizer:
   lr: 5e-4
@@ -23,10 +28,13 @@ optimizer:
   gradient_clip: 35.0
 
 scheduler:
-  total_iter: 143500
+  # LR schedule is defined in code using these hyperparameters.
+  # total number of steps is derived automatically from the Trainer
+  # (epochs, dataloader length, grad accumulation, etc.).
   type: WarmupOneCycleLR
   final_div_factor: 1000.0
-  warmup_iters: 2870
+  # Fraction of total training steps used for warmup (e.g., 0.02 = 2%).
+  warmup_fraction: 0.02
   base_momentum: 0.85
   max_momentum: 0.95
 
@@ -37,7 +45,7 @@ data:
   train_shards: "data/SCARED/shards/shard-train-{000000..000506}.tar" # 22928
   val_shards: "data/SCARED/shards/shard-val-{000000..000118}.tar" # 5907
   num_workers: 16
-  batch_size: 16
+  batch_size: 32
   # Shorter side fed to torchvision.transforms.Resize
   image_size: 256
   shuffle_buffer: 1000
