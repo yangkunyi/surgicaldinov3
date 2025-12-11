@@ -286,12 +286,21 @@ class DinoDPTDepthModule(pl.LightningModule):
         valid_mask: Optional[Tensor] = batch.get("valid_mask")
 
         depth_pred = self(images)
-        loss = self.loss_fn(depth_pred, depth_gt, valid_mask)
+        
+        gt_median = torch.median(depth_gt[valid_mask])
+        pred_median = torch.median(depth_pred[valid_mask])
+        
+        ratio = gt_median / pred_median
+        depth_pred_scaled = depth_pred * ratio
+        depth_pred_scaled = torch.clamp(depth_pred_scaled, min=0.0001, max=150.0)
+        
+        loss = self.loss_fn(depth_pred_scaled, depth_gt, valid_mask)
 
+        
         # Validation metrics aggregated over the full validation run
-        val_mae = mae(depth_pred, depth_gt, valid_mask)
-        val_rmse = rmse(depth_pred, depth_gt, valid_mask)
-        val_abs_rel = abs_rel(depth_pred, depth_gt, valid_mask)
+        val_mae = mae(depth_pred_scaled, depth_gt, valid_mask)
+        val_rmse = rmse(depth_pred_scaled, depth_gt, valid_mask)
+        val_abs_rel = abs_rel(depth_pred_scaled, depth_gt, valid_mask)
 
         self.log(
             "val/loss",

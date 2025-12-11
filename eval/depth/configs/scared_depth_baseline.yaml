@@ -58,7 +58,7 @@ model:
     hub_name: "dinov3_vitb16"
     pretrained_weights_path: "dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
     # Fine-tuned teacher checkpoint; adjust to your run if needed.
-    trained_checkpoint: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/results/da3_weight_1_0/eval/training_12499/teacher_checkpoint.pth"
+    trained_checkpoint: null
     layer_indices: [5, 7, 9, 11]
     patch_start_idx: 0
 
@@ -88,7 +88,7 @@ loss:
 wandb:
   project: "surgical-dinov3-depth"
   entity: null
-  run_name: "scared_dinov3_dpt"
+  run_name: "scared_dinov3_dpt_baseline"
   tags: ["SCARED", "dinov3", "depth"]
   log_model: false
 
