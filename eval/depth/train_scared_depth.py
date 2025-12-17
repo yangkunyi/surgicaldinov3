@@ -28,8 +28,11 @@ from lightning.pytorch.loggers import WandbLogger
 
 from .data_scared import ScaredDepthDataModule
 from .dataset import DepthDataModule
+from .scared_lance import ScaredLanceDataModule
+from .scared_lmdb import ScaredLmdbDataModule
 from .pl_module import DinoDPTDepthModule
 import sys
+
 
 
 @hydra.main(config_path="configs", config_name="scared_depth", version_base=None)
@@ -51,15 +54,19 @@ def main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
 
     # ---------------------- build data module ----------------------
-    backend = getattr(cfg.data, "backend", "webdataset")
+    backend = cfg.data.backend
     logger.info(f"Using data backend: {backend}")
     if backend == "webdataset":
         datamodule = ScaredDepthDataModule(cfg.data)
     elif backend == "hdf5":
         datamodule = DepthDataModule(cfg)
+    elif backend == "lance":
+        datamodule = ScaredLanceDataModule(cfg.data)
+    elif backend == "lmdb":
+        datamodule = ScaredLmdbDataModule(cfg.data)
     else:
         raise ValueError(
-            f"Unsupported data.backend '{backend}', expected 'webdataset' or 'hdf5'."
+            f"Unsupported data.backend '{backend}', expected 'webdataset', 'hdf5', 'lance', or 'lmdb'."
         )
 
     # ---------------------- build model ----------------------------

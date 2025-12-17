@@ -8,6 +8,8 @@ This module:
   ``"backbone."`` prefix from its keys.
 * Freezes the backbone and trains only the DPT depth head.
 * Uses the ``SigLoss`` defined in ``eval/depth/loss.py``.
+* Accepts batches from WebDataset, HDF5, or Lance backends that provide
+  ``image``, ``depth``, and ``valid_mask`` keys.
 
 The Lightning entry script is defined in ``train_scared_depth.py``.
 """
@@ -314,7 +316,7 @@ class DinoDPTDepthModule(pl.LightningModule):
         ratio = gt_median / (pred_median + 1e-8)
 
         # 处理可能的异常情况（如某张图全黑，导致 ratio 为 NaN）
-        ratio[torch.isnan(ratio)] = 1.0
+        ratio[~torch.isfinite(ratio)] = 1.0
 
         # 6. 调整 ratio 维度以进行广播: [B] -> [B, 1, 1, 1]
         ratio = ratio.view(B, 1, 1, 1)
@@ -322,45 +324,50 @@ class DinoDPTDepthModule(pl.LightningModule):
         depth_pred_scaled = depth_pred * ratio
         depth_pred_scaled = torch.clamp(depth_pred_scaled, min=0.0001, max=150.0)
 
+
         loss = self.loss_fn(depth_pred_scaled, depth_gt, valid_mask)
+        
+  
+        # print(valid_mask.sum())
 
         # Validation metrics aggregated over the full validation run
         val_mae = mae(depth_pred_scaled, depth_gt, valid_mask)
         val_rmse = rmse(depth_pred_scaled, depth_gt, valid_mask)
         val_abs_rel = abs_rel(depth_pred_scaled, depth_gt, valid_mask)
 
-        self.log(
-            "val/loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            batch_size=depth_pred.shape[0],
-        )
-        self.log(
-            "val/mae",
-            val_mae,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            batch_size=depth_pred.shape[0],
-        )
-        self.log(
-            "val/rmse",
-            val_rmse,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            batch_size=depth_pred.shape[0],
-        )
-        self.log(
-            "val/abs_rel",
-            val_abs_rel,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            batch_size=depth_pred.shape[0],
-        )
+        if torch.isfinite(loss):
+            self.log(
+                "val/loss",
+                loss,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=True,
+                batch_size=depth_pred.shape[0],
+            )
+            self.log(
+                "val/mae",
+                val_mae,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                batch_size=depth_pred.shape[0],
+            )
+            self.log(
+                "val/rmse",
+                val_rmse,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                batch_size=depth_pred.shape[0],
+            )
+            self.log(
+                "val/abs_rel",
+                val_abs_rel,
+                on_step=False,
+                on_epoch=True,
+                prog_bar=False,
+                batch_size=depth_pred.shape[0],
+            )
 
         return loss
 
@@ -387,7 +394,7 @@ class DinoDPTDepthModule(pl.LightningModule):
                 "Trainer is not attached; cannot compute total steps for scheduler."
             )
 
-        total_steps = int(self.trainer.estimated_stepping_batches)
+        total_steps = int(self.trainer.max_steps)
 
         # Warmup can be specified as a fraction of total steps, or as an
         # absolute number of iterations for backward compatibility.

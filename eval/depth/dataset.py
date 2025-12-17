@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import h5py  # type: ignore
-import numpy as np
 import lightning as pl
 import torch
 from loguru import logger
 from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import Compose
-
-from .utils.transform import NormalizeImage, PrepareForNet, Resize
+from torchvision.transforms import v2
 
 
 DEFAULT_H5 = "/bd_byta6000i0/users/surgical_depth/SCARED_fixed/scared.hdf5"
@@ -62,7 +59,7 @@ class DepthH5Dataset(Dataset):
         self.h5_path = str(h5_path)
         self.datasets = list(datasets)
         self.index: List[Tuple[str, str, str]] = []  # (ds_group, keyframe_group, frame)
-        self.h5_file = None
+        self._h5: h5py.File | None = None
 
         with h5py.File(self.h5_path, "r") as f:
             for ds in self.datasets:
@@ -75,72 +72,72 @@ class DepthH5Dataset(Dataset):
             f"with datasets {self.datasets} ({len(self.index)} frames)"
         )
 
-        # Build transforms; if input_size is None, skip resizing
-        if input_size is None:
-            self.transform = Compose(
-                [
-                    NormalizeImage(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                    PrepareForNet(),
-                ]
+        # Torchvision v2 transforms (mirrors eval/depth/scared_lance.py)
+        image_tfms: List[Any] = [v2.ToImage()]
+        depth_tfms: List[Any] = [v2.ToImage()]
+
+        if input_size is not None:
+            image_tfms.append(
+                v2.Resize(
+                    input_size,
+                    interpolation=v2.InterpolationMode.BILINEAR,
+                    antialias=True,
+                )
             )
-        else:
-            self.transform = Compose(
-                [
-                    Resize(
-                        width=input_size,
-                        height=input_size,
-                        resize_target=True,
-                        keep_aspect_ratio=True,
-                        ensure_multiple_of=16,
-                        resize_method="lower_bound",
-                    ),
-                    NormalizeImage(
-                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                    ),
-                    PrepareForNet(),
-                ]
+            depth_tfms.append(
+                v2.Resize(input_size, interpolation=v2.InterpolationMode.NEAREST)
             )
+
+        image_tfms.extend(
+            [
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+        depth_tfms.append(v2.ToDtype(torch.float32, scale=False))
+
+        self.image_transform = v2.Compose(image_tfms)
+        self.depth_transform = v2.Compose(depth_tfms)
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_h5"] = None
+        return state
+
+    def __del__(self) -> None:
+        try:
+            if self._h5 is not None:
+                self._h5.close()
+        except Exception:
+            pass
+
+    def _get_h5(self) -> h5py.File:
+        if self._h5 is None:
+            self._h5 = h5py.File(self.h5_path, "r")
+        return self._h5
 
     def __len__(self) -> int:
         return len(self.index)
 
     def __getitem__(self, i: int):
-        if self.h5_file is None:
-            self.h5_file = h5py.File(self.h5_path, "r")
-
         ds_group, kf_group, fr = self.index[i]
 
-        grp = self.h5_file[ds_group][kf_group][fr]
-        if "image" not in grp or "gt" not in grp:
-            raise KeyError(
-                f"Expected 'image' and 'gt' datasets at '{ds_group}/{kf_group}/{fr}'."
-            )
+        grp = self._get_h5()[ds_group][kf_group][fr]
         img_np = grp["image"][...]
         depth_np = grp["gt"][...]
-
-        if img_np.ndim != 3 or img_np.shape[-1] != 3:
-            raise ValueError(
-                f"Unexpected image shape {img_np.shape} at '{ds_group}/{kf_group}/{fr}'."
-            )
-        if depth_np.ndim not in (2, 3):
-            raise ValueError(
-                f"Unexpected depth shape {depth_np.shape} at '{ds_group}/{kf_group}/{fr}'."
-            )
         if depth_np.ndim == 3:
             depth_np = depth_np[..., 0]
 
-        sample = {
-            "image": img_np.astype(np.float32) / 255.0,
-            "depth": depth_np.astype(np.float32),
-        }
-        sample = self.transform(sample)
+        image = self.image_transform(img_np)  # FloatTensor[3, H, W]
+        depth = self.depth_transform(depth_np).squeeze(0)  # FloatTensor[H, W]
 
-        image = torch.from_numpy(sample["image"])  # CHW float32
-        depth = torch.from_numpy(sample["depth"])  # HW float32
-        depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
-        valid_mask = (depth > 0.1) & (depth < 150.0)
+        # depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+        valid_mask = (depth > 0.0001) & (depth < 150.0)
+        # print("depth")
+        # print(depth.min())
+        # print(depth.max())
+        # print("valid_mask")
+        # print(valid_mask.sum())
 
         return {
             "image": image,

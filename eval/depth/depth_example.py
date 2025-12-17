@@ -79,3 +79,30 @@ def depth_evaluation(gt_depths, pred_depths, savedir=None, pred_masks=None, min_
     return mean_errors
 
 
+def build_lance_dataloader(
+    lance_path,
+    dataset_ids,
+    image_size=256,
+    min_depth=0.0001,
+    max_depth=150.0,
+    batch_size=32,
+    num_workers=8,
+):
+    from torch.utils.data import DataLoader
+    from .scared_lance import LanceMapDataset
+
+    ds = LanceMapDataset(
+        lance_path,
+        allowed_ids=dataset_ids,
+        image_size=image_size,
+        min_depth=min_depth,
+        max_depth=max_depth,
+    )
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
