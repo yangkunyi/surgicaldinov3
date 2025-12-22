@@ -1,0 +1,77 @@
+logs_root: "eval/depth/logs"
+n_gpus: 1
+seed: 42
+
+trainer:
+  _target_: lightning.pytorch.Trainer
+  # For iterable WebDataset training, drive the loop by steps rather than epochs.
+  max_steps: 71800
+  accelerator: gpu
+  devices: 1
+  precision: 32
+  log_every_n_steps: 2
+  val_check_interval: 718
+  default_root_dir: "${logs_root}/lightning"
+  gradient_clip_val: ${optimizer.gradient_clip}
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.TQDMProgressBar
+
+optimizer:
+  lr: 5e-4
+  beta1: 0.9
+  beta2: 0.99
+  weight_decay: 1.0e-4
+  gradient_clip: 35.0
+
+scheduler:
+  type: WarmupOneCycleLR
+  final_div_factor: 1000.0
+  warmup_fraction: 0.02
+  base_momentum: 0.85
+  max_momentum: 0.95
+
+data:
+  backend: "lmdb"  # "webdataset", "hdf5", "lance", or "lmdb"
+  train_shards: "data/SCARED/shards/shard-train-{000000..000506}.tar"
+  val_shards: "data/SCARED/shards/shard-val-{000000..000118}.tar"
+  num_workers: 8
+  batch_size: 32
+  image_size: 256
+  shuffle_buffer: 1000
+  min_depth: 0.0001
+  max_depth: 150.0
+
+  h5_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-HDF5/SCARED_256.hdf5"
+  train_datasets: [1,2,3,4,5,6,7]
+  val_datasets: [8,9]
+  input_size: 256
+
+  lance_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED_hdd.lance"
+  columns: ["image", "depth"]
+
+  lmdb_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED_256.lmdb"
+  megainfo_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED_256.csv"
+
+model:
+  type: "da3"
+  da3:
+    # Local HF-style directory containing config.json + model.safetensors.
+    # Use your DA3-Base checkpoint directory here.
+    model_id: "depth-anything/da3-base"
+
+loss:
+  warm_up: false
+  warm_iter: 100
+
+wandb:
+  project: "surgical-dinov3-depth"
+  entity: null
+  run_name: "scared_da3_depth_head"
+  tags: ["SCARED", "da3", "depth"]
+  log_model: false
+
+hydra:
+  run:
+    dir: ${logs_root}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

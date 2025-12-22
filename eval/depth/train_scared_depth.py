@@ -31,6 +31,7 @@ from .dataset import DepthDataModule
 from .scared_lance import ScaredLanceDataModule
 from .scared_lmdb import ScaredLmdbDataModule
 from .pl_module import DinoDPTDepthModule
+from .pl_module_da3 import DA3DPTDepthModule
 import sys
 
 
@@ -70,13 +71,22 @@ def main(cfg: DictConfig) -> None:
         )
 
     # ---------------------- build model ----------------------------
-    model = DinoDPTDepthModule(
-        backbone_cfg=cfg.model.backbone,
-        head_cfg=cfg.model.head,
-        optim_cfg=cfg.optimizer,
-        scheduler_cfg=cfg.scheduler,
-        loss_cfg=cfg.loss,
-    )
+    model_type = getattr(cfg.model, "type", "dinov3")
+    if str(model_type).lower() == "da3":
+        model = DA3DPTDepthModule(
+            da3_cfg=cfg.model.da3,
+            optim_cfg=cfg.optimizer,
+            scheduler_cfg=cfg.scheduler,
+            loss_cfg=cfg.loss,
+        )
+    else:
+        model = DinoDPTDepthModule(
+            backbone_cfg=cfg.model.backbone,
+            head_cfg=cfg.model.head,
+            optim_cfg=cfg.optimizer,
+            scheduler_cfg=cfg.scheduler,
+            loss_cfg=cfg.loss,
+        )
 
     # ---------------------- W&B logger -----------------------------
 

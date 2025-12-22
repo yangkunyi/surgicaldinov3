@@ -58,6 +58,7 @@ class DepthH5Dataset(Dataset):
         super().__init__()
         self.h5_path = str(h5_path)
         self.datasets = list(datasets)
+        self.input_size = input_size
         self.index: List[Tuple[str, str, str]] = []  # (ds_group, keyframe_group, frame)
         self._h5: h5py.File | None = None
 
@@ -72,32 +73,44 @@ class DepthH5Dataset(Dataset):
             f"with datasets {self.datasets} ({len(self.index)} frames)"
         )
 
-        # Torchvision v2 transforms (mirrors eval/depth/scared_lance.py)
-        image_tfms: List[Any] = [v2.ToImage()]
-        depth_tfms: List[Any] = [v2.ToImage()]
+        # Torchvision v2 transforms (mirrors eval/depth/scared_lance.py).
+        # Keep a "with resize" and "no resize" path so pre-resized datasets
+        # don't pay Resize cost in every __getitem__.
+        image_tfms_post: List[Any] = [
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+        depth_tfms_post: List[Any] = [v2.ToDtype(torch.float32, scale=False)]
 
         if input_size is not None:
-            image_tfms.append(
-                v2.Resize(
-                    input_size,
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=True,
-                )
+            self.image_transform_with_resize = v2.Compose(
+                [
+                    v2.ToImage(),
+                    v2.Resize(
+                        input_size,
+                        interpolation=v2.InterpolationMode.BILINEAR,
+                        antialias=True,
+                    ),
+                    *image_tfms_post,
+                ]
             )
-            depth_tfms.append(
-                v2.Resize(input_size, interpolation=v2.InterpolationMode.NEAREST)
+            self.depth_transform_with_resize = v2.Compose(
+                [
+                    v2.ToImage(),
+                    v2.Resize(
+                        input_size,
+                        interpolation=v2.InterpolationMode.NEAREST,
+                        antialias=False,
+                    ),
+                    *depth_tfms_post,
+                ]
             )
+        else:
+            self.image_transform_with_resize = None
+            self.depth_transform_with_resize = None
 
-        image_tfms.extend(
-            [
-                v2.ToDtype(torch.float32, scale=True),
-                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
-        depth_tfms.append(v2.ToDtype(torch.float32, scale=False))
-
-        self.image_transform = v2.Compose(image_tfms)
-        self.depth_transform = v2.Compose(depth_tfms)
+        self.image_transform_no_resize = v2.Compose([v2.ToImage(), *image_tfms_post])
+        self.depth_transform_no_resize = v2.Compose([v2.ToImage(), *depth_tfms_post])
 
     def __getstate__(self) -> Dict[str, Any]:
         state = dict(self.__dict__)
@@ -128,8 +141,21 @@ class DepthH5Dataset(Dataset):
         if depth_np.ndim == 3:
             depth_np = depth_np[..., 0]
 
-        image = self.image_transform(img_np)  # FloatTensor[3, H, W]
-        depth = self.depth_transform(depth_np).squeeze(0)  # FloatTensor[H, W]
+        # Skip Resize when the frame is already resized to torchvision's
+        # Resize(size=int) convention (shorter side == input_size).
+        if self.input_size is not None:
+            assert self.image_transform_with_resize is not None
+            assert self.depth_transform_with_resize is not None
+            do_resize = min(int(img_np.shape[0]), int(img_np.shape[1])) != int(self.input_size)
+            if do_resize:
+                image = self.image_transform_with_resize(img_np)  # FloatTensor[3, H, W]
+                depth = self.depth_transform_with_resize(depth_np).squeeze(0)  # FloatTensor[H, W]
+            else:
+                image = self.image_transform_no_resize(img_np)  # FloatTensor[3, H, W]
+                depth = self.depth_transform_no_resize(depth_np).squeeze(0)  # FloatTensor[H, W]
+        else:
+            image = self.image_transform_no_resize(img_np)  # FloatTensor[3, H, W]
+            depth = self.depth_transform_no_resize(depth_np).squeeze(0)  # FloatTensor[H, W]
 
         # depth = torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
         valid_mask = (depth > 0.0001) & (depth < 150.0)

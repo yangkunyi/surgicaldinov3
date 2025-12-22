@@ -3,103 +3,72 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-"""Cholec80 dataset implemented as a single WebDataset-backed class.
+"""Cholec80 dataset backed by frames on disk.
 
-Frames are expected to have been extracted and sharded into tar files named
-``shard-<NNNNNN>.tar`` (for example using ``utility/create_wds_shards_global.py``).
+Expected directory structure under ``root``:
 
-This module exposes one class, :class:`Cholec80`, which:
-- builds a ``webdataset.WebDataset`` pipeline internally, and
-- applies a user-provided ``transform`` inside that pipeline, so that each
-  sample yielded by the dataset is a *transformed* image.
+.. code-block:: text
 
-Example
--------
+    root/
+      frames/
+        video01/
+          frame_000001.jpg
+          frame_000002.jpg
+          ...
+        video02/
+          ...
 
-.. code-block:: python
-
-    from dinov3.data.datasets.cholec80 import Cholec80
-    from torchvision import transforms
-
-    shards = \
-        "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/" \
-        "data/cholec80/shards/shard-{000001..000046}.tar"
-
-    transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-    ])
-
-    dataset = Cholec80(shards=shards, transform=transform)
-
-    for img in dataset:
-        # img is already transformed
-        ...
+This is a standard map-style dataset (``__len__`` / ``__getitem__``) returning
+``(image, target)`` pairs. The target is always ``None``.
 """
 
-from typing import Callable, Iterator, Literal, Optional
+import os
+from typing import Any, Callable, List, Optional
 
-import webdataset as wds
-from torch.utils.data import IterableDataset
-
-
-DecodeMode = Literal["pil", "rgb"]
+from .decoders import ImageDataDecoder, TargetDecoder
+from .extended import ExtendedVisionDataset
 
 
-class Cholec80(IterableDataset):
-    """IterableDataset wrapper for Cholec80 WebDataset shards.
-
-    The dataset is backed by :class:`webdataset.WebDataset` and configured
-    entirely from the constructor arguments. The provided ``transform`` is
-    integrated into the WebDataset pipeline itself, so it is applied as part
-    of the data reading/decoding stage.
-
-    Each iteration yields a single (optionally transformed) image; there is no
-    separate target.
-    """
-
+class Cholec80(ExtendedVisionDataset):
     def __init__(
         self,
         *,
-        root: str,
+        root: Optional[str] = None,
+        transforms: Optional[Callable] = None,
         transform: Optional[Callable] = None,
-        shuffle_buffer: int = 4000,
-        shardshuffle: int = 42,        
-        **kwargs
+        target_transform: Optional[Callable] = None,
     ) -> None:
-        """Initialize the Cholec80 dataset.
+        super().__init__(
+            root=root,
+            transforms=transforms,
+            transform=transform,
+            target_transform=target_transform,
+            image_decoder=ImageDataDecoder,
+            target_decoder=TargetDecoder,
+        )
 
-        Args:
-            shards: Glob / brace pattern pointing to shard tars, e.g.
-                ``".../shards/shard-{000001..000046}.tar"`` or
-                ``".../shards/shard-*.tar"``.
-            transform: Callable applied to each decoded image (e.g. torchvision
-                transforms). If ``None``, images are yielded as decoded by
-                WebDataset.
-            decode: Either ``"pil"`` (PIL.Image) or ``"rgb"`` (NumPy RGB
-                arrays) to use with ``WebDataset.decode``.
-            shuffle_buffer: Per-worker sample shuffle buffer size.
-            shardshuffle: Seed / flag controlling shard order shuffling in
-                ``wds.WebDataset``.
-        """
+        frames_root = os.path.join(self.root, "frames")
+        video_dirnames = sorted(os.listdir(frames_root))
 
-        super().__init__()
-        # Base WebDataset pipeline: read shards, decode images, local shuffle,
-        # and keep only the JPEG field as `(image,)`.
-        ds = wds.WebDataset(root, shardshuffle=shardshuffle, resampled=True)
-        ds = ds.decode("pil").shuffle(shuffle_buffer).to_tuple("jpg","__key__")
+        image_paths: List[str] = []
+        for video_dirname in video_dirnames:
+            video_root = os.path.join(frames_root, video_dirname)
+            frame_filenames = sorted(os.listdir(video_root))
+            for frame_filename in frame_filenames:
+                image_paths.append(os.path.join("frames", video_dirname, frame_filename))
 
-        # If a transform is provided, integrate it into the WebDataset pipeline
-        # so that it runs as part of the iterable processing.
-        if transform is not None:
-            ds = ds.map_tuple(transform)
+        self.image_paths = image_paths
 
-        self._dataset = ds
+    def get_image_data(self, index: int) -> bytes:
+        image_relpath = self.image_paths[index]
+        image_full_path = os.path.join(self.root, image_relpath)
+        with open(image_full_path, mode="rb") as f:
+            image_data = f.read()
+        return image_data
 
-    def __iter__(self) -> Iterator:
-        """Yield transformed images from the underlying WebDataset pipeline."""
+    def get_target(self, index: int) -> Any:
+        return None
 
-        return iter(self._dataset)
-
+    def __len__(self) -> int:
+        return len(self.image_paths)
 

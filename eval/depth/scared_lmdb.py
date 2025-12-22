@@ -142,7 +142,6 @@ class LmdbMapDataset(Dataset):
         self.allowed_dataset_numbers = _normalize_allowed_dataset_numbers(allowed_datasets)
 
         self._env: lmdb.Environment | None = None
-        self._txn: lmdb.Transaction | None = None
 
         all_records = _read_megainfo(self.megainfo_path)
         if self.allowed_dataset_numbers:
@@ -171,7 +170,12 @@ class LmdbMapDataset(Dataset):
         # Safe here because we keep a persistent read txn per worker process.
         self._lmdb_buffers = bool(buffers)
 
-        self.image_transform = v2.Compose(
+        self.image_size = int(image_size)
+
+        # When the dataset has already been resized offline, we want to avoid
+        # paying the Resize cost in every __getitem__. We keep two transform
+        # pipelines and select based on the sample's current spatial size.
+        self.image_transform_with_resize = v2.Compose(
             [
                 v2.ToImage(),
                 v2.Resize(image_size, interpolation=v2.InterpolationMode.BILINEAR),
@@ -179,11 +183,24 @@ class LmdbMapDataset(Dataset):
                 v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]
         )
+        self.image_transform_no_resize = v2.Compose(
+            [
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
 
-        self.depth_transform = v2.Compose(
+        self.depth_transform_with_resize = v2.Compose(
             [
                 v2.ToImage(),
                 v2.Resize(image_size, interpolation=v2.InterpolationMode.NEAREST),
+                v2.ToDtype(torch.float32, scale=False),
+            ]
+        )
+        self.depth_transform_no_resize = v2.Compose(
+            [
+                v2.ToImage(),
                 v2.ToDtype(torch.float32, scale=False),
             ]
         )
@@ -194,15 +211,10 @@ class LmdbMapDataset(Dataset):
     def __getstate__(self) -> Dict[str, Any]:
         state = dict(self.__dict__)
         state["_env"] = None
-        state["_txn"] = None
         return state
 
     def __del__(self) -> None:
         try:
-            if self._txn is not None:
-                # Abort read txn and release reader slot.
-                self._txn.abort()
-                self._txn = None
             if self._env is not None:
                 self._env.close()
         except Exception:
@@ -212,13 +224,6 @@ class LmdbMapDataset(Dataset):
         if self._env is None:
             self._env = lmdb.open(self.lmdb_path, **self._lmdb_open_opts)
         return self._env
-
-    def _get_txn(self) -> lmdb.Transaction:
-        # Lazily create one read-only transaction per worker process and reuse it
-        # for all __getitem__ calls. This reduces per-sample overhead.
-        if self._txn is None:
-            self._txn = self._get_env().begin(write=False, buffers=self._lmdb_buffers)
-        return self._txn
 
     def __len__(self) -> int:
         return len(self.records)
@@ -239,9 +244,10 @@ class LmdbMapDataset(Dataset):
         k_img = f"{index_str}-image".encode("utf-8")
         k_depth = f"{index_str}-depth".encode("utf-8")
 
-        txn = self._get_txn()
-        v_img = txn.get(k_img)
-        v_depth = txn.get(k_depth)
+        env = self._get_env()
+        with env.begin(write=False, buffers=self._lmdb_buffers) as txn:
+            v_img = txn.get(k_img)
+            v_depth = txn.get(k_depth)
 
         if v_img is None or v_depth is None:
             raise KeyError(
@@ -265,8 +271,17 @@ class LmdbMapDataset(Dataset):
         if depth_np.ndim == 3 and depth_np.shape[-1] == 1:
             depth_np = depth_np[..., 0]
 
-        image = self.image_transform(image_np)
-        depth = self.depth_transform(depth_np).squeeze(0)
+        # torchvision Resize(size=int) makes the shorter side == image_size.
+        # If the sample is already resized to that convention, skip Resize.
+        do_resize = min(int(image_np.shape[0]), int(image_np.shape[1])) != self.image_size
+        if do_resize:
+            image = self.image_transform_with_resize(image_np)
+            depth = self.depth_transform_with_resize(depth_np).squeeze(0)
+
+        else:
+            image = self.image_transform_no_resize(image_np)
+            depth = self.depth_transform_no_resize(depth_np).squeeze(0)
+
         valid_mask = (depth >= self.min_depth) & (depth <= self.max_depth)
 
         return {

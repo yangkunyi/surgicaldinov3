@@ -55,7 +55,7 @@ data:
 
   # Optional HDF5 configuration (used when backend == "hdf5").
   # train_datasets / val_datasets are also used by the Lance backend.
-  h5_path: "/bd_byta6000i0/users/surgical_depth/SCARED_fixed/scared.hdf5"
+  h5_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-HDF5/SCARED_256.hdf5"
   train_datasets: [1,2,3,4,5,6,7]
   val_datasets: [8,9]
   input_size: 256
@@ -65,8 +65,8 @@ data:
   columns: ["image", "depth"]
 
   # Optional LMDB configuration (used when backend == "lmdb")
-  lmdb_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED.lmdb"
-  megainfo_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED.csv"
+  lmdb_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED_256.lmdb"
+  megainfo_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/SCARED-LMDB/SCARED_256.csv"
 
 model:
   backbone:

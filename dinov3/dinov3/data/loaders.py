@@ -215,17 +215,14 @@ def make_data_loader(
         worker_init_fn: Optional init function for each dataloader worker.
     """
 
-    if type(dataset) is Cholec80:
-        sampler = None
-    else:
-        sampler = _make_sampler(
-            dataset=dataset,
-            type=sampler_type,
-            shuffle=shuffle,
-            seed=seed,
-            size=sampler_size,
-            advance=sampler_advance,
-        )
+    sampler = _make_sampler(
+        dataset=dataset,
+        type=sampler_type,
+        shuffle=shuffle,
+        seed=seed,
+        size=sampler_size,
+        advance=sampler_advance,
+    )
 
     logger.info("using PyTorch data loader")
     data_loader = torch.utils.data.DataLoader(

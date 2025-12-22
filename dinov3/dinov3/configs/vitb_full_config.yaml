@@ -67,7 +67,7 @@ gram:
   loss_weight_schedule: null  # (dict): If not None, use a schedule for the loss weight instead of `loss_weight`
 train:
   batch_size_per_gpu: 64
-  dataset_path: Cholec80:root=/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/cholec80/shards/shard-{000001..000046}.tar
+  dataset_path: Cholec80:root=/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/cholec80
   data_config: null
   output_dir: /checkpoint/dino/qas/rope/vitb16_im1k
   saveckp_freq: 20
