@@ -6,9 +6,11 @@
 import logging
 
 import numpy as np
+import random
 import torch
 from torch import nn
 from torchvision.transforms import v2
+from torchvision.transforms.v2 import functional as F
 
 from dinov3.data.transforms import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, GaussianBlur, make_normalize_transform
 
@@ -230,4 +232,52 @@ class DataAugmentationDINO(object):
             output["local_crops"] = local_crops
             output["offsets"] = ()
 
+        return output
+
+
+class DataAugmentationDINOMuM(object):
+    def __init__(
+        self,
+        dino_augmentation: DataAugmentationDINO,
+        *,
+        mum_resize_size: int,
+        mum_crop_size: int,
+        mum_horizontal_flips: bool,
+        mean=IMAGENET_DEFAULT_MEAN,
+        std=IMAGENET_DEFAULT_STD,
+    ):
+        self.dino_augmentation = dino_augmentation
+        self.mum_hflip_prob = 0.5 if mum_horizontal_flips else 0.0
+        self.mum_crop_size = mum_crop_size
+        self.mum_resize = v2.Resize(
+            size=mum_resize_size,
+            interpolation=v2.InterpolationMode.BICUBIC,
+            antialias=True,
+        )
+        self.mum_normalize = v2.Compose(
+            [
+                v2.ToImage(),
+                v2.ToDtype(torch.float32, scale=True),
+                make_normalize_transform(mean=mean, std=std),
+            ]
+        )
+
+    def __call__(self, sample):
+        image = sample["image"]
+        clip = sample["clip"]
+        mum_anchor = sample["mum_anchor"]
+
+        output = self.dino_augmentation(image)
+
+        do_flip = random.random() < self.mum_hflip_prob
+        if do_flip:
+            clip = [F.horizontal_flip(frame) for frame in clip]
+
+        clip = [self.mum_resize(frame) for frame in clip]
+        crop_h, crop_w = self.mum_crop_size, self.mum_crop_size
+        img_h, img_w = F.get_size(clip[0])
+        top = random.randint(0, img_h - crop_h)
+        left = random.randint(0, img_w - crop_w)
+        output["mum_clip"] = [self.mum_normalize(F.crop(frame, top, left, crop_h, crop_w)) for frame in clip]
+        output["mum_anchor"] = mum_anchor
         return output

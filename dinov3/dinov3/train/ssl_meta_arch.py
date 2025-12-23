@@ -7,6 +7,7 @@ import gc
 import logging
 from functools import partial
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
@@ -15,7 +16,7 @@ from torch import Tensor, nn
 import dinov3.distributed as distributed
 from dinov3.checkpointer import init_fsdp_model_from_checkpoint
 from dinov3.configs import get_default_config
-from dinov3.data import DataAugmentationDINO
+from dinov3.data import DataAugmentationDINO, DataAugmentationDINOMuM
 from dinov3.fsdp.ac_compile_parallelize import ac_compile_parallelize
 from dinov3.layers.dino_head import DINOHead
 from dinov3.loss import DINOLoss, GramLoss, KoLeoLoss, KoLeoLossDistributed, iBOTPatchLoss
@@ -62,8 +63,13 @@ class SSLMetaArch(nn.Module):
 
         self.embed_dim = embed_dim  # D
         self.dino_out_dim = cfg.dino.head_n_prototypes  # K
+        self.dino_enabled = cfg.dino.enabled
+        self.ibot_enabled = cfg.ibot.enabled
+        self.mum_wandb_gt_image = np.empty((0,))
+        self.mum_wandb_recon_image = np.empty((0,))
 
         logger.info("OPTIONS -- DINO")
+        logger.info(f"OPTIONS -- DINO -- enabled: {cfg.dino.enabled}")
         logger.info(f"OPTIONS -- DINO -- loss_weight: {cfg.dino.loss_weight}")
         logger.info(f"OPTIONS -- DINO -- global_ignore_diagonal: {cfg.dino.global_ignore_diagonal}")
         logger.info(f"OPTIONS -- DINO -- head_n_prototypes: {cfg.dino.head_n_prototypes}")
@@ -102,6 +108,7 @@ class SSLMetaArch(nn.Module):
             self.koleo_loss = KoLeoLoss()
 
         logger.info("OPTIONS -- IBOT")
+        logger.info(f"OPTIONS -- IBOT -- enabled: {cfg.ibot.enabled}")
         logger.info(f"OPTIONS -- IBOT -- loss_weight: {cfg.ibot.loss_weight}")
         logger.info(f"OPTIONS -- IBOT masking -- ibot_mask_ratio_tuple: {cfg.ibot.mask_ratio_min_max}")
         logger.info(f"OPTIONS -- IBOT masking -- ibot_mask_sample_probability: {cfg.ibot.mask_sample_probability}")
@@ -146,6 +153,13 @@ class SSLMetaArch(nn.Module):
         self.dino_loss_weight = self.cfg.dino.loss_weight
         self.dino_koleo_loss_weight = self.cfg.dino.koleo_loss_weight
         self.ibot_loss_weight = self.cfg.ibot.loss_weight
+        if not self.dino_enabled:
+            self.dino_loss_weight = 0.0
+            self.dino_koleo_loss_weight = 0.0
+            self.student.dino_head.requires_grad_(False)
+        if not self.ibot_enabled:
+            self.ibot_loss_weight = 0.0
+            self.student.ibot_head.requires_grad_(False)
 
         # Local loss reweighting
         if self.cfg.dino.reweight_dino_local_loss:
@@ -281,9 +295,66 @@ class SSLMetaArch(nn.Module):
                 nn.GELU(),
                 nn.Linear(self.cfg.da3.projector_hidden_dim, self.cfg.da3.embed_dim),
             )
-            # Register projector under the student so it participates in
-            # optimizer param-group construction and FSDP wrapping.
-            student_model_dict["da3_projector"] = self.da3_projector
+            self.student["da3_projector"] = self.da3_projector
+            self.model_ema["da3_projector"] = nn.Sequential(
+                nn.Linear(self.embed_dim, self.cfg.da3.projector_hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.cfg.da3.projector_hidden_dim, self.cfg.da3.embed_dim),
+            )
+            self.model_ema["da3_projector"].requires_grad_(False)
+
+        # MuM pixel reconstruction
+        self.mum_enabled = self.cfg.mum.enabled
+        self.mum_decoder: nn.Module | None = None
+        if self.mum_enabled:
+            logger.info("OPTIONS -- MuM pixel reconstruction enabled")
+            logger.info(f"OPTIONS -- MuM -- loss_weight: {self.cfg.mum.loss_weight}")
+            logger.info(f"OPTIONS -- MuM -- image_size: {self.cfg.mum.image_size}")
+            logger.info(f"OPTIONS -- MuM -- resize_size: {self.cfg.mum.resize_size}")
+            logger.info(f"OPTIONS -- MuM -- min_frames: {self.cfg.mum.min_frames}")
+            logger.info(f"OPTIONS -- MuM -- max_frames: {self.cfg.mum.max_frames}")
+            logger.info(f"OPTIONS -- MuM -- clip_stride: {self.cfg.mum.clip_stride}")
+            logger.info(f"OPTIONS -- MuM -- mask_ratio: {self.cfg.mum.mask_ratio}")
+            logger.info(f"OPTIONS -- MuM -- decoder_embed_dim: {self.cfg.mum.decoder_embed_dim}")
+            logger.info(f"OPTIONS -- MuM -- decoder_depth: {self.cfg.mum.decoder_depth}")
+            logger.info(f"OPTIONS -- MuM -- decoder_num_heads: {self.cfg.mum.decoder_num_heads}")
+            logger.info(f"OPTIONS -- MuM -- norm_pix_loss: {self.cfg.mum.norm_pix_loss}")
+            logger.info(f"OPTIONS -- MuM -- norm_layer: {self.cfg.mum.norm_layer}")
+
+            from mum.mum.model import MuMAutoEncoder
+
+            self.mum_decoder = MuMAutoEncoder(
+                img_size=self.cfg.mum.image_size,
+                patch_size=self.cfg.student.patch_size,
+                in_chans=self.cfg.student.in_chans,
+                embed_dim=self.embed_dim,
+                depth=0,
+                num_heads=1,
+                decoder_embed_dim=self.cfg.mum.decoder_embed_dim,
+                decoder_depth=self.cfg.mum.decoder_depth,
+                decoder_num_heads=self.cfg.mum.decoder_num_heads,
+                norm_pix_loss=self.cfg.mum.norm_pix_loss,
+                norm_layer=self.cfg.mum.norm_layer,
+                n_storage_tokens=0,
+                gradient_checkpointing=self.cfg.mum.gradient_checkpointing,
+            )
+            self.student["mum_decoder"] = self.mum_decoder
+            self.model_ema["mum_decoder"] = MuMAutoEncoder(
+                img_size=self.cfg.mum.image_size,
+                patch_size=self.cfg.student.patch_size,
+                in_chans=self.cfg.student.in_chans,
+                embed_dim=self.embed_dim,
+                depth=0,
+                num_heads=1,
+                decoder_embed_dim=self.cfg.mum.decoder_embed_dim,
+                decoder_depth=self.cfg.mum.decoder_depth,
+                decoder_num_heads=self.cfg.mum.decoder_num_heads,
+                norm_pix_loss=self.cfg.mum.norm_pix_loss,
+                norm_layer=self.cfg.mum.norm_layer,
+                n_storage_tokens=0,
+                gradient_checkpointing=self.cfg.mum.gradient_checkpointing,
+            )
+            self.model_ema["mum_decoder"].requires_grad_(False)
 
     def _setup_distillation(self):
         logger.info(f"Performing distillation from {self.cfg.distillation.full_cfg_path}")
@@ -336,6 +407,8 @@ class SSLMetaArch(nn.Module):
         self.student.backbone.init_weights()
         self.student.dino_head.init_weights()
         self.student.ibot_head.init_weights()
+        if self.mum_enabled:
+            self.student["mum_decoder"].init_weights()
         self.dino_loss.init_weights()
         self.ibot_patch_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
@@ -502,6 +575,74 @@ class SSLMetaArch(nn.Module):
             iteration=iteration,
         )
 
+        if self.mum_enabled:
+            mum_clip_len = data["mum_clip_len"]
+            metrics_dict["mum_clip_len"] = mum_clip_len
+
+            mum_clip = data["collated_mum_clip"].cuda(non_blocking=True)
+            B_mum, S, _, H, W = mum_clip.shape
+            assert B_mum == B
+
+            mum_images = mum_clip.flatten(0, 1)
+            patch_size = self.cfg.student.patch_size
+            n_patches = (H // patch_size) * (W // patch_size)
+            len_keep = int(n_patches * (1 - self.cfg.mum.mask_ratio))
+
+            noise = torch.rand(B * S, n_patches, device=mum_images.device)
+            ids_shuffle = torch.argsort(noise, dim=1)
+            ids_restore = torch.argsort(ids_shuffle, dim=1)
+            ids_keep = ids_shuffle[:, :len_keep]
+
+            mum_masks = torch.ones((B * S, n_patches), device=mum_images.device, dtype=torch.bool)
+            mum_masks.scatter_(1, ids_keep, False)
+
+            mum_backbone_out = self.student.backbone(mum_images, masks=mum_masks, is_training=True)
+            mum_cls = mum_backbone_out["x_norm_clstoken"]
+            mum_patches = mum_backbone_out["x_norm_patchtokens"]
+            visible_patches = torch.gather(
+                mum_patches,
+                dim=1,
+                index=ids_keep.unsqueeze(-1).expand(-1, -1, mum_patches.shape[-1]),
+            )
+            decoder_in = torch.cat([mum_cls.unsqueeze(1), visible_patches], dim=1)
+
+            mum_decoder = self.student["mum_decoder"]
+            pred = mum_decoder.forward_decoder(decoder_in, ids_restore, B, S, H=H, W=W)
+            mum_loss = mum_decoder.forward_loss(mum_images, pred, mum_masks)
+            loss_dict["mum_loss"] = mum_loss
+            loss_dict["mum_loss_weight"] = self.cfg.mum.loss_weight
+            loss_accumulator += self.cfg.mum.loss_weight * mum_loss
+
+            if (
+                self.cfg.mum.wandb_log_recon
+                and distributed.is_main_process()
+                and iteration % self.cfg.mum.wandb_log_recon_interval == 0
+            ):
+                with torch.no_grad():
+                    gt_frame = mum_images[:1]
+                    pred_frame = pred[:1]
+                    mask_frame = mum_masks[:1]
+
+                    gt_patches = mum_decoder.patchify(gt_frame)
+                    if self.cfg.mum.norm_pix_loss:
+                        mean = gt_patches.mean(dim=-1, keepdim=True)
+                        var = gt_patches.var(dim=-1, keepdim=True)
+                        pred_patches = pred_frame * (var + 1.0e-6).sqrt() + mean
+                    else:
+                        pred_patches = pred_frame
+
+                    recon_patches = gt_patches.clone()
+                    recon_patches[mask_frame] = pred_patches[mask_frame]
+                    recon_frame = mum_decoder.unpatchify(recon_patches)
+
+                    mean_rgb = gt_frame.new_tensor(self.cfg.crops.rgb_mean).view(1, 3, 1, 1)
+                    std_rgb = gt_frame.new_tensor(self.cfg.crops.rgb_std).view(1, 3, 1, 1)
+                    gt_vis = (gt_frame * std_rgb + mean_rgb).clamp(0, 1)
+                    recon_vis = (recon_frame * std_rgb + mean_rgb).clamp(0, 1)
+
+                    self.mum_wandb_gt_image = (gt_vis[0].permute(1, 2, 0) * 255).to(torch.uint8).cpu().numpy()
+                    self.mum_wandb_recon_image = (recon_vis[0].permute(1, 2, 0) * 255).to(torch.uint8).cpu().numpy()
+
         self.backprop_loss(loss_accumulator)
 
         # Return total weighted loss and a dict of metrics to log
@@ -625,7 +766,7 @@ class SSLMetaArch(nn.Module):
             raise RuntimeError("DA3 teacher is not initialized but DA3 distillation is enabled")
 
         n_crops, B, rgb, H, W = clean_global_crops.shape
-        images = clean_global_crops.flatten(0, 1) # [n_crops * B, C, H, W]
+        images = clean_global_crops.flatten(0, 1)  # [n_crops * B, C, H, W]
 
         da3_tokens = self.da3_teacher(images)  # [n_crops * B, P_da3, D_da3]
         if da3_tokens.dim() != 3:
@@ -725,54 +866,55 @@ class SSLMetaArch(nn.Module):
         loss_accumulator = 0.0
 
         # Loss scales like in DINOv2, these are multiplied with the loss weights from the config
-        dino_global_terms = (
-            n_global_crops * (n_global_crops - 1) if self.dino_global_ignore_diagonal else n_global_crops**2
-        )
-        dino_local_terms = n_global_crops * n_local_crops
-        dino_global_scale = dino_global_terms / (dino_global_terms + dino_local_terms)
-        dino_local_scale = dino_local_terms / (dino_global_terms + dino_local_terms)
-        koleo_scale = n_global_crops
+        if self.dino_enabled:
+            dino_global_terms = (
+                n_global_crops * (n_global_crops - 1) if self.dino_global_ignore_diagonal else n_global_crops**2
+            )
+            dino_local_terms = n_global_crops * n_local_crops
+            dino_global_scale = dino_global_terms / (dino_global_terms + dino_local_terms)
+            dino_local_scale = dino_local_terms / (dino_global_terms + dino_local_terms)
+            koleo_scale = n_global_crops
 
-        # DINO local loss: compare post-head CLS tokens: student(local crops) vs. teacher(global crops)
-        dino_local_crops_loss = self.dino_loss(
-            student_logits=student_local["cls_after_head"],
-            teacher_probs=teacher_global["cls_centered"],
-        )
-        loss_dict["dino_local_crops_loss"] = dino_local_crops_loss
+            # DINO local loss: compare post-head CLS tokens: student(local crops) vs. teacher(global crops)
+            dino_local_crops_loss = self.dino_loss(
+                student_logits=student_local["cls_after_head"],
+                teacher_probs=teacher_global["cls_centered"],
+            )
+            loss_dict["dino_local_crops_loss"] = dino_local_crops_loss
 
-        # Reweighting of DINO loss
-        if self.cfg.dino.reweight_dino_local_loss:
-            local_weight = self.dino_local_loss_schedule[iteration]
-        else:
-            local_weight = 1.0
+            # Reweighting of DINO loss
+            if self.cfg.dino.reweight_dino_local_loss:
+                local_weight = self.dino_local_loss_schedule[iteration]
+            else:
+                local_weight = 1.0
 
-        loss_dict["dino_local_loss_weight"] = local_weight
-        loss_accumulator += self.dino_loss_weight * dino_local_scale * local_weight * dino_local_crops_loss
+            loss_dict["dino_local_loss_weight"] = local_weight
+            loss_accumulator += self.dino_loss_weight * dino_local_scale * local_weight * dino_local_crops_loss
 
-        # DINO global loss: compare post-head CLS tokens: student(global crops) vs. teacher(global crops)
-        dino_global_crops_loss = self.dino_loss(
-            student_logits=student_global["cls_after_head"],
-            teacher_probs=teacher_global["cls_centered"],
-            ignore_diagonal=self.dino_global_ignore_diagonal,
-        )
-        loss_dict["dino_global_crops_loss"] = dino_global_crops_loss
-        loss_accumulator += self.dino_loss_weight * dino_global_scale * dino_global_crops_loss
+            # DINO global loss: compare post-head CLS tokens: student(global crops) vs. teacher(global crops)
+            dino_global_crops_loss = self.dino_loss(
+                student_logits=student_global["cls_after_head"],
+                teacher_probs=teacher_global["cls_centered"],
+                ignore_diagonal=self.dino_global_ignore_diagonal,
+            )
+            loss_dict["dino_global_crops_loss"] = dino_global_crops_loss
+            loss_accumulator += self.dino_loss_weight * dino_global_scale * dino_global_crops_loss
 
-        # Koleo: regularize pre-head CLS tokens of student(global crops)
-        koleo_loss = sum(self.koleo_loss(x) for x in student_global["cls_pre_head"]) / n_global_crops
-        loss_dict["koleo_loss"] = koleo_loss
-        loss_accumulator += self.dino_koleo_loss_weight * koleo_scale * koleo_loss
+            # Koleo: regularize pre-head CLS tokens of student(global crops)
+            koleo_loss = sum(self.koleo_loss(x) for x in student_global["cls_pre_head"]) / n_global_crops
+            loss_dict["koleo_loss"] = koleo_loss
+            loss_accumulator += self.dino_koleo_loss_weight * koleo_scale * koleo_loss
 
-        # IBOT loss
-        ibot_patch_loss = self.ibot_patch_loss.forward_masked(
-            student_global["masked_patch_after_head"],
-            teacher_global["masked_patch_centered"],
-            student_masks_flat=masks,
-            n_masked_patches=mask_indices_list.shape[0],
-            masks_weight=masks_weight,
-        )
-        loss_dict["ibot_loss"] = ibot_patch_loss
-        loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
+        if self.ibot_enabled:
+            ibot_patch_loss = self.ibot_patch_loss.forward_masked(
+                student_global["masked_patch_after_head"],
+                teacher_global["masked_patch_centered"],
+                student_masks_flat=masks,
+                n_masked_patches=mask_indices_list.shape[0],
+                masks_weight=masks_weight,
+            )
+            loss_dict["ibot_loss"] = ibot_patch_loss
+            loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
 
         # Gram loss
         if self.gram_use_loss:
@@ -896,7 +1038,7 @@ class SSLMetaArch(nn.Module):
             torch._foreach_add_(gramteacher_param_list, teacher_param_list, alpha=1 - m)
 
     def build_data_augmentation_dino(self, cfg):
-        return DataAugmentationDINO(
+        dino_augmentation = DataAugmentationDINO(
             cfg.crops.global_crops_scale,
             cfg.crops.local_crops_scale,
             cfg.crops.local_crops_number,
@@ -910,6 +1052,16 @@ class SSLMetaArch(nn.Module):
             mean=cfg.crops.rgb_mean,
             std=cfg.crops.rgb_std,
         )
+        if cfg.mum.enabled:
+            return DataAugmentationDINOMuM(
+                dino_augmentation,
+                mum_resize_size=cfg.mum.resize_size,
+                mum_crop_size=cfg.mum.crop_size,
+                mum_horizontal_flips=cfg.crops.horizontal_flips,
+                mean=cfg.crops.rgb_mean,
+                std=cfg.crops.rgb_std,
+            )
+        return dino_augmentation
 
     def get_maybe_fused_params_for_submodel(self, m: nn.Module):
         params_groups = get_params_groups_with_decay_fsdp(
@@ -954,6 +1106,10 @@ class SSLMetaArch(nn.Module):
             trained_model_process_group=process_subgroup,
             inference_only_models_process_groups=inference_only_models_process_groups,
         )
+        if self.mum_enabled:
+            from torch.distributed.fsdp import register_fsdp_forward_method
+
+            register_fsdp_forward_method(self.student["mum_decoder"], "forward_decoder")
 
     def broadcast_to_subgroups(self, tensor, over_dim, global_batch_size=None):
         """

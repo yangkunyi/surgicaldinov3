@@ -8,6 +8,7 @@ compute_precision:
   reduce_dtype: fp32
   sharding_strategy: SHARD_GRAD_OP
 dino:
+  enabled: true
   loss_weight: 1.0
   global_ignore_diagonal: true  # Whether to ignore A-A and B-B global pairs, default as in DINOv2, ignored by SSLMetaArch
   head_n_prototypes: 65536
@@ -29,6 +30,7 @@ dino:
     end: 0.5
     warmup_epochs: 0
 ibot:
+  enabled: true
   loss_weight: 1.0
   mask_sample_probability: 0.5
   mask_ratio_min_max:
@@ -187,6 +189,24 @@ checkpointing:
   period: 3750
   max_to_keep: 3
   keep_every: 99999999999999999  # Save a checkpoint every N iterations, regardless of max_to_keep and period
+
+mum:
+  enabled: false
+  loss_weight: 0.1
+  image_size: 256
+  resize_size: 256
+  min_frames: 2
+  max_frames: 8
+  clip_stride: 1
+  mask_ratio: 0.75
+  decoder_embed_dim: 512
+  decoder_depth: 8
+  decoder_num_heads: 16
+  norm_pix_loss: true
+  norm_layer: layernormbf16
+  gradient_checkpointing: false
+  wandb_log_recon: false
+  wandb_log_recon_interval: 100
 
 # Example of constant schedules with schedules v2
 # # schedules:

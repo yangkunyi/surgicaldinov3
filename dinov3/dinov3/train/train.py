@@ -310,6 +310,9 @@ def build_data_loader_from_cfg(
         mask_generator=mask_generator,
         random_circular_shift=cfg.ibot.mask_random_circular_shift,
         local_batch_size=local_batch_size,
+        mum_enabled=cfg.mum.enabled,
+        mum_min_frames=cfg.mum.min_frames,
+        mum_max_frames=cfg.mum.max_frames,
     )
     batch_size = dataloader_batch_size_per_gpu
     num_workers = cfg.train.num_workers
@@ -319,6 +322,10 @@ def build_data_loader_from_cfg(
         transform=model.build_data_augmentation_dino(cfg),
         target_transform=lambda _: (),
     )
+    if cfg.mum.enabled:
+        dataset.return_clip = True
+        dataset.clip_max_frames = cfg.mum.max_frames
+        dataset.clip_stride = cfg.mum.clip_stride
 
     if isinstance(dataset, torch.utils.data.IterableDataset):
         sampler_type = SamplerType.INFINITE
@@ -635,6 +642,10 @@ def do_train(cfg, model, resume=False):
                     wandb_log[k] = float(v.item())
                 else:
                     wandb_log[k] = float(v)
+
+            if cfg.mum.enabled and cfg.mum.wandb_log_recon and iteration % cfg.mum.wandb_log_recon_interval == 0:
+                wandb_log["mum/gt"] = wandb.Image(model.mum_wandb_gt_image, caption="MuM GT")
+                wandb_log["mum/recon"] = wandb.Image(model.mum_wandb_recon_image, caption="MuM reconstruction")
 
             wandb.log(wandb_log, step=iteration)
 

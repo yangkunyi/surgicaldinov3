@@ -17,6 +17,9 @@ def collate_data_and_cast(
     mask_generator=None,
     random_circular_shift=False,
     local_batch_size=None,
+    mum_enabled: bool = False,
+    mum_min_frames: int = 2,
+    mum_max_frames: int = 8,
 ):
     n_global_crops = len(samples_list[0][0]["global_crops"])
     n_local_crops = len(samples_list[0][0]["local_crops"])
@@ -79,6 +82,24 @@ def collate_data_and_cast(
     }
     if collated_gram_teacher_crops is not None:
         out["collated_gram_teacher_crops"] = collated_gram_teacher_crops.to(dtype)
+    if mum_enabled:
+        mum_clip_len = random.randint(mum_min_frames, mum_max_frames)
+        mum_clip_slices = []
+        for sample in samples_list:
+            clip = sample[0]["mum_clip"]
+            anchor = sample[0]["mum_anchor"]
+            max_start = len(clip) - mum_clip_len
+            start_min = anchor - mum_clip_len + 1
+            if start_min < 0:
+                start_min = 0
+            start_max = anchor
+            if start_max > max_start:
+                start_max = max_start
+            start = random.randint(start_min, start_max)
+            mum_clip_slices.append(torch.stack(clip[start : start + mum_clip_len]))
+        collated_mum_clip = torch.stack(mum_clip_slices)
+        out["collated_mum_clip"] = collated_mum_clip.to(dtype)
+        out["mum_clip_len"] = mum_clip_len
     return out
 
 
