@@ -88,15 +88,23 @@ class MultiDistillationMetaArch(SSLMetaArch):
         )
         # End of multidistillation codepath
 
+        feature_anchor_global = {}
+        if self.feature_anchor_enabled:
+            feature_anchor_global = self.get_feature_anchor_output(
+                global_crops_subgroup.unflatten(0, (n_global_crops, B)),
+            )
+
         # Compute losses and backprop
         loss_accumulator, loss_dict = self.compute_losses(
             teacher_global=teacher_global,
             student_global=student_global,
             student_local=student_local,
+            gram_global={},
+            da3_global=None,
+            feature_anchor_global=feature_anchor_global,
             masks=masks,
             mask_indices_list=mask_indices_list,
             masks_weight=masks_weight,
-            gram_global=None,
             iteration=iteration,
         )
 

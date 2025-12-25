@@ -36,10 +36,10 @@ dino:
 ibot:
   enabled: true
   loss_weight: 1.0
-  mask_sample_probability: 0.5
+  mask_sample_probability: 1.0
   mask_ratio_min_max:
-  - 0.1
-  - 0.5
+  - 0.4
+  - 0.6
   mask_random_circular_shift: false
   force_masking_even_with_zero_weight: False
   separate_head: true
@@ -68,7 +68,7 @@ gram:
   global_teacher_resize_antialias: false  # Whether to use antialiasing when resizing the outputs of the gram teacher
   loss_weight_schedule: null  # (dict): If not None, use a schedule for the loss weight instead of `loss_weight`
 train:
-  batch_size_per_gpu: 16
+  batch_size_per_gpu: 64
   dataset_path: Cholec80:root=/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/data/cholec80
   data_config: null
   output_dir: /checkpoint/dino/qas/rope/vitb16_im1k
@@ -224,6 +224,13 @@ mum:
   gradient_checkpointing: false
   wandb_log_recon: false
   wandb_log_recon_interval: 100
+
+feature_anchor:
+  enabled: false
+  loss_weight: 1.0
+  metric: l2 # (str): In [cosine, l2]
+  targets: cls+patch # (str): In [patch, cls, cls+patch]
+  tokens_used: unmasked # (str): For patch tokens only, in [all, masked, unmasked]
 
 # Example of constant schedules with schedules v2
 # # schedules:

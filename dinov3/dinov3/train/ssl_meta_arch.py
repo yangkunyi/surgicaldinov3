@@ -3,6 +3,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import copy
 import gc
 import logging
 from functools import partial
@@ -113,7 +114,7 @@ class SSLMetaArch(nn.Module):
         logger.info(f"OPTIONS -- IBOT masking -- ibot_mask_ratio_tuple: {cfg.ibot.mask_ratio_min_max}")
         logger.info(f"OPTIONS -- IBOT masking -- ibot_mask_sample_probability: {cfg.ibot.mask_sample_probability}")
 
-        assert 0 <= cfg.ibot.mask_ratio_min_max[0] < cfg.ibot.mask_ratio_min_max[1] <= 1, (
+        assert 0 <= cfg.ibot.mask_ratio_min_max[0] <= cfg.ibot.mask_ratio_min_max[1] <= 1, (
             "provide a valid cfg.ibot.mask_ratio_min_max"
         )
         assert 0 <= cfg.ibot.mask_sample_probability <= 1, "provide a positive mask probability for ibot"
@@ -145,6 +146,21 @@ class SSLMetaArch(nn.Module):
         self.teacher.requires_grad_(False)
         self.model_ema.requires_grad_(False)
         self.ema_params_lists = None
+
+        # Feature anchor distillation: keep a frozen copy of the (pretrained) encoder.
+        self.feature_anchor_enabled = self.cfg.feature_anchor.enabled
+        self.feature_anchor_loss_weight = self.cfg.feature_anchor.loss_weight
+        self.feature_anchor_metric = self.cfg.feature_anchor.metric
+        self.feature_anchor_targets = self.cfg.feature_anchor.targets
+        self.feature_anchor_tokens_used = self.cfg.feature_anchor.tokens_used
+        if self.feature_anchor_enabled:
+            self.frozen_teacher = nn.ModuleDict({"backbone": copy.deepcopy(self.student.backbone)})
+            self.frozen_teacher.requires_grad_(False)
+            logger.info("OPTIONS -- FEATURE ANCHOR DISTILLATION")
+            logger.info(f"OPTIONS -- FEATURE ANCHOR -- loss_weight: {self.feature_anchor_loss_weight}")
+            logger.info(f"OPTIONS -- FEATURE ANCHOR -- metric: {self.feature_anchor_metric}")
+            logger.info(f"OPTIONS -- FEATURE ANCHOR -- targets: {self.feature_anchor_targets}")
+            logger.info(f"OPTIONS -- FEATURE ANCHOR -- tokens_used: {self.feature_anchor_tokens_used}")
 
         # getting config params fixed:
         self.n_local_crops = self.cfg.crops.local_crops_number
@@ -443,6 +459,8 @@ class SSLMetaArch(nn.Module):
                 process_group=distributed.get_process_subgroup(),
             )
             self.model_ema.load_state_dict(self.student.state_dict())
+            if self.feature_anchor_enabled:
+                self.init_feature_anchor_teacher()
 
         if self.cfg.distillation.enabled:
             if self.cfg.distillation.checkpoint_path != "ignore":
@@ -541,6 +559,11 @@ class SSLMetaArch(nn.Module):
             mask_indices_list=mask_indices_list,
         )
 
+        # Feature anchor teacher output (frozen pretrained encoder)
+        feature_anchor_global = {}
+        if self.feature_anchor_enabled:
+            feature_anchor_global = self.get_feature_anchor_output(global_crops.unflatten(0, (n_global_crops, B)))
+
         # DA3 teacher output for masked positions (if enabled)
         if self.da3_enabled:
             da3_global = self.get_da3_teacher_output(
@@ -569,6 +592,7 @@ class SSLMetaArch(nn.Module):
             student_local=student_local,
             gram_global=gram_global,
             da3_global=da3_global,
+            feature_anchor_global=feature_anchor_global,
             masks=masks,
             mask_indices_list=mask_indices_list,
             masks_weight=masks_weight,
@@ -691,6 +715,20 @@ class SSLMetaArch(nn.Module):
             "cls_after_head": cls_after_head.unflatten(0, [n_crops, B]),  # [n_crops, B, K]
             "cls_centered": cls_centered,  # [n_crops, B, K]
             "masked_patch_centered": masked_patch_centered,  # [n_masked_patches, K]
+        }
+
+    @torch.no_grad()
+    def get_feature_anchor_output(self, images):
+        n_crops, B, rgb, H, W = images.shape
+        images = images.flatten(0, 1)
+
+        backbone_out = self.frozen_teacher.backbone(images, is_training=True)
+        cls = backbone_out["x_norm_clstoken"]  # [n_crops * B, D]
+        patch = backbone_out["x_norm_patchtokens"]  # [n_crops * B, P, D]
+
+        return {
+            "cls_pre_head": cls.unflatten(0, [n_crops, B]),  # [n_crops, B, D]
+            "patch_pre_head": patch.unflatten(0, [n_crops, B]),  # [n_crops, B, P, D]
         }
 
     def get_gram_teacher_output(self, images, *, masks, teacher_global, student_global, student_global_crops_size):
@@ -855,6 +893,7 @@ class SSLMetaArch(nn.Module):
         student_local,
         gram_global,
         da3_global,
+        feature_anchor_global,
         masks,
         mask_indices_list,
         masks_weight,
@@ -915,6 +954,67 @@ class SSLMetaArch(nn.Module):
             )
             loss_dict["ibot_loss"] = ibot_patch_loss
             loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
+
+        # Feature anchor distillation loss (frozen pretrained encoder)
+        if self.feature_anchor_enabled:
+            feature_anchor_loss = 0.0
+
+            if self.feature_anchor_targets in ["patch", "cls+patch"]:
+                student_patches = student_global["patch_pre_head"].flatten(0, 1)  # [n_crops * B, P, D]
+                anchor_patches = feature_anchor_global["patch_pre_head"].flatten(0, 1)  # [n_crops * B, P, D]
+
+                if self.feature_anchor_tokens_used == "masked":
+                    student_patches = student_patches[masks]
+                    anchor_patches = anchor_patches[masks]
+                elif self.feature_anchor_tokens_used == "unmasked":
+                    student_patches = student_patches[~masks]
+                    anchor_patches = anchor_patches[~masks]
+                elif self.feature_anchor_tokens_used == "all":
+                    student_patches = student_patches.flatten(0, 1)
+                    anchor_patches = anchor_patches.flatten(0, 1)
+                else:
+                    raise ValueError(f"Unsupported feature_anchor.tokens_used={self.feature_anchor_tokens_used!r}")
+
+                student_norm = F.normalize(student_patches, dim=-1)
+                anchor_norm = F.normalize(anchor_patches, dim=-1)
+                patch_cos_sim = (student_norm * anchor_norm).sum(dim=-1)
+                patch_cos_sim_mean = patch_cos_sim.mean()
+
+                if self.feature_anchor_metric == "cosine":
+                    patch_loss = 1.0 - patch_cos_sim_mean
+                elif self.feature_anchor_metric == "l2":
+                    patch_loss = (student_norm - anchor_norm).pow(2).sum(dim=-1).mean()
+                else:
+                    raise ValueError(f"Unsupported feature_anchor.metric={self.feature_anchor_metric!r}")
+
+                loss_dict["feature_anchor_patch_loss"] = patch_loss
+                feature_anchor_loss += patch_loss
+
+            if self.feature_anchor_targets in ["cls", "cls+patch"]:
+                student_cls = student_global["cls_pre_head"].flatten(0, 1)  # [n_crops * B, D]
+                anchor_cls = feature_anchor_global["cls_pre_head"].flatten(0, 1)  # [n_crops * B, D]
+
+                student_norm = F.normalize(student_cls, dim=-1)
+                anchor_norm = F.normalize(anchor_cls, dim=-1)
+                cls_cos_sim = (student_norm * anchor_norm).sum(dim=-1)
+                cls_cos_sim_mean = cls_cos_sim.mean()
+
+                if self.feature_anchor_metric == "cosine":
+                    cls_loss = 1.0 - cls_cos_sim_mean
+                elif self.feature_anchor_metric == "l2":
+                    cls_loss = (student_norm - anchor_norm).pow(2).sum(dim=-1).mean()
+                else:
+                    raise ValueError(f"Unsupported feature_anchor.metric={self.feature_anchor_metric!r}")
+
+                loss_dict["feature_anchor_cls_loss"] = cls_loss
+                feature_anchor_loss += cls_loss
+
+            if self.feature_anchor_targets not in ["patch", "cls", "cls+patch"]:
+                raise ValueError(f"Unsupported feature_anchor.targets={self.feature_anchor_targets!r}")
+
+            loss_dict["feature_anchor_loss"] = feature_anchor_loss
+            loss_dict["feature_anchor_loss_weight"] = self.feature_anchor_loss_weight
+            loss_accumulator += self.feature_anchor_loss_weight * feature_anchor_loss
 
         # Gram loss
         if self.gram_use_loss:
@@ -991,11 +1091,19 @@ class SSLMetaArch(nn.Module):
             self.gram_teacher.eval()
             self.gram_teacher_initialized = True
 
+    @torch.no_grad()
+    def init_feature_anchor_teacher(self) -> None:
+        self.frozen_teacher.backbone.load_state_dict(self.student.backbone.state_dict())
+        self.frozen_teacher.requires_grad_(False)
+        self.frozen_teacher.eval()
+
     def train(self):
         super().train()
         self.teacher.eval()
         if self.has_gram_teacher:
             self.gram_teacher.eval()
+        if self.feature_anchor_enabled:
+            self.frozen_teacher.eval()
 
     def forward(self, inputs):
         raise NotImplementedError
@@ -1093,6 +1201,9 @@ class SSLMetaArch(nn.Module):
         default_process_group = distributed.get_default_process_group()
         inference_only_models = [self.model_ema]
         inference_only_models_process_groups = [process_subgroup]
+        if self.feature_anchor_enabled:
+            inference_only_models.append(self.frozen_teacher)
+            inference_only_models_process_groups.append(process_subgroup)
         if self.has_gram_teacher:
             inference_only_models.append(self.gram_teacher)
             inference_only_models_process_groups.append(default_process_group)

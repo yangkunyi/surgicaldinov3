@@ -471,6 +471,9 @@ def do_train(cfg, model, resume=False):
         teacher_ckpt = adapt_ckpt_for_module(model.teacher.backbone, pretrained_weights)
         incompatible_keys_teacher = model.teacher.backbone.load_state_dict(teacher_ckpt, strict=False)
         logger.info(f"Incompatible keys in teacher: {incompatible_keys_teacher}")
+
+        if model.feature_anchor_enabled:
+            model.init_feature_anchor_teacher()
     start_iter = 0
     if resume and (last_checkpoint_dir := find_latest_checkpoint(ckpt_dir)):
         logger.info(f"Checkpoint found {last_checkpoint_dir}")
