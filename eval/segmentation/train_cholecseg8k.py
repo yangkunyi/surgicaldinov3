@@ -10,8 +10,7 @@ import lightning as pl
 from lightning.pytorch.loggers import WandbLogger
 
 from data_cholecseg8k import CholecSeg8kDataModule
-from pl_module import DINOv3LinearProbeSegModule
-import os
+from pl_module import LinearProbeSegModule
 
 
 @hydra.main(config_path="configs", config_name="cholecseg8k", version_base=None)
@@ -34,7 +33,7 @@ def main(cfg: DictConfig) -> None:
     wandb_logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
 
     datamodule = CholecSeg8kDataModule(cfg.data)
-    model = DINOv3LinearProbeSegModule(
+    model = LinearProbeSegModule(
         backbone_cfg=cfg.model.backbone,
         head_cfg=cfg.model.head,
         loss_cfg=cfg.loss,

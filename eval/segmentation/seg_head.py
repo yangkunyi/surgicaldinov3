@@ -103,3 +103,42 @@ class DINOv3FeatureAdapter(nn.Module):
                 norm=self.norm,
             )
         return feats
+
+
+class PixioFeatureAdapter(nn.Module):
+    """Extracts patch-token features from a Pixio ViT backbone as spatial maps."""
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        layer_indices: Sequence[int],
+        use_cls_token: bool,
+        norm: bool = True,
+    ) -> None:
+        super().__init__()
+        self.backbone = backbone
+        self.layer_indices = tuple(int(i) for i in layer_indices)
+        self.use_cls_token = bool(use_cls_token)
+        self.norm = bool(norm)
+
+    def forward(self, images: Tensor):
+        with torch.inference_mode():
+            block_ids = sorted(self.layer_indices)
+            feats = self.backbone(images, block_ids=block_ids)
+
+        patch_h = int(self.backbone.patch_embed.patch_size[0])
+        patch_w = int(self.backbone.patch_embed.patch_size[1])
+        h = int(images.shape[-2] // patch_h)
+        w = int(images.shape[-1] // patch_w)
+
+        out: list[Tensor | tuple[Tensor, Tensor]] = []
+        for f in feats:
+            patch_tokens = f["patch_tokens_norm"] if self.norm else f["patch_tokens"]
+            patch_map = patch_tokens.transpose(1, 2).reshape(patch_tokens.shape[0], patch_tokens.shape[2], h, w)
+            if self.use_cls_token:
+                cls_tokens = f["cls_tokens_norm"] if self.norm else f["cls_tokens"]
+                cls_token = cls_tokens.mean(dim=1)
+                out.append((patch_map, cls_token))
+            else:
+                out.append(patch_map)
+        return out

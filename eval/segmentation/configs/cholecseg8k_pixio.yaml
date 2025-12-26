@@ -1,6 +1,6 @@
 seed: 42
 
-run_name: "cholecseg8k_linprobe_seg"
+run_name: "cholecseg8k_linprobe_seg_pixio"
 wandb_run_name: "${run_name}-${oc.env:OAR_JOB_ID}"
 
 paths:
@@ -16,7 +16,6 @@ data:
   persistent_workers: true
   drop_last: true
 
-  # Video-level split: either specify val_videos or use val_ratio + split_seed.
   val_videos: []
   val_ratio: 0.2
   split_seed: 42
@@ -35,12 +34,11 @@ data:
 
 model:
   backbone:
-    type: "dinov3"
-    repo_dir: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3"
-    hub_name: "dinov3_vitb16"
-    pretrained_weights_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/dinov3/checkpoints/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
-    trained_checkpoint: null
-    layer_indices: [2, 5, 8, 11]
+    type: "pixio"
+    repo_dir: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/pixio/pixio"
+    model_name: "pixio_vitl16"
+    pretrained_weights_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/pixio/checkpoints/pixio_vitl16.pth"
+    layer_indices: [5, 11, 17, 23]
     norm: true
 
   head:
@@ -62,7 +60,7 @@ optimizer:
   weight_decay: 1.0e-4
 
 scheduler:
-  type: "warmup_cosine"  # "none", "onecycle", or "warmup_cosine"
+  type: "warmup_cosine"
   warmup_fraction: 0.02
   final_div_factor: 1000.0
   base_momentum: 0.85
@@ -88,7 +86,7 @@ trainer:
 wandb:
   project: "cholecseg8k-segmentation"
   entity: null
-  tags: ["CholecSeg8k", "dinov3", "segmentation", "linear-probe"]
+  tags: ["CholecSeg8k", "pixio", "segmentation", "linear-probe"]
   log_model: false
   offline: true
   log_masks: false

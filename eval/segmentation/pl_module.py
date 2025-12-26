@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from colormap import CLASS_NAME_MAPPING, COLOR_CLASS_MAPPING, IMAGENET_MEAN, IMAGENET_STD
-from seg_head import DINOv3FeatureAdapter, LinearHead
+from seg_head import DINOv3FeatureAdapter, LinearHead, PixioFeatureAdapter
 from seg_loss import SegmentationLoss
 from seg_metrics import calculate_intersect_and_union, compute_iou_and_acc
 
@@ -23,7 +23,7 @@ def _resolve_path(path_str: str) -> str:
     return str((Path(__file__).resolve().parents[2] / path).resolve())
 
 
-class DINOv3LinearProbeSegModule(pl.LightningModule):
+class LinearProbeSegModule(pl.LightningModule):
     def __init__(
         self,
         backbone_cfg: Any,
@@ -65,12 +65,22 @@ class DINOv3LinearProbeSegModule(pl.LightningModule):
 
         embed_dim = int(self.backbone.embed_dim)
         in_channels = [embed_dim for _ in backbone_cfg.layer_indices]
-        self.feature_adapter = DINOv3FeatureAdapter(
-            backbone=self.backbone,
-            layer_indices=backbone_cfg.layer_indices,
-            use_cls_token=head_cfg.use_cls_token,
-            norm=backbone_cfg.norm,
-        )
+        if backbone_cfg.type.lower() == "dinov3":
+            self.feature_adapter = DINOv3FeatureAdapter(
+                backbone=self.backbone,
+                layer_indices=backbone_cfg.layer_indices,
+                use_cls_token=head_cfg.use_cls_token,
+                norm=backbone_cfg.norm,
+            )
+        elif backbone_cfg.type.lower() == "pixio":
+            self.feature_adapter = PixioFeatureAdapter(
+                backbone=self.backbone,
+                layer_indices=backbone_cfg.layer_indices,
+                use_cls_token=head_cfg.use_cls_token,
+                norm=backbone_cfg.norm,
+            )
+        else:
+            raise ValueError(f"Unsupported backbone.type: {backbone_cfg.type}")
         self.head = LinearHead(
             in_channels=in_channels,
             n_output_channels=self.num_classes,
@@ -105,6 +115,13 @@ class DINOv3LinearProbeSegModule(pl.LightningModule):
         )
 
     def _build_backbone(self, cfg: Any) -> nn.Module:
+        if cfg.type.lower() == "dinov3":
+            return self._build_dinov3_backbone(cfg)
+        if cfg.type.lower() == "pixio":
+            return self._build_pixio_backbone(cfg)
+        raise ValueError(f"Unsupported backbone.type: {cfg.type}")
+
+    def _build_dinov3_backbone(self, cfg: Any) -> nn.Module:
         import torch.hub
 
         repo_dir = _resolve_path(cfg.repo_dir)
@@ -126,6 +143,29 @@ class DINOv3LinearProbeSegModule(pl.LightningModule):
             )
             backbone.load_state_dict(new_state, strict=False)
 
+        return backbone
+
+    def _build_pixio_backbone(self, cfg: Any) -> nn.Module:
+        import importlib.util
+        import sys
+
+        repo_dir = _resolve_path(cfg.repo_dir)
+        sys.path.insert(0, repo_dir)
+
+        try:
+            module_path = str(Path(repo_dir) / "pixio.py")
+            spec = importlib.util.spec_from_file_location("pixio_models", module_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+
+        model_fn = getattr(module, cfg.model_name)
+        pretrained = None
+        if cfg.pretrained_weights_path:
+            pretrained = _resolve_path(cfg.pretrained_weights_path)
+        backbone = model_fn(pretrained=pretrained)
+        backbone.embed_dim = int(backbone.patch_embed.proj.out_channels)
         return backbone
 
     def _freeze_backbone(self) -> None:
@@ -362,3 +402,6 @@ class DINOv3LinearProbeSegModule(pl.LightningModule):
             }
 
         raise ValueError(f"Unsupported scheduler.type: {self.scheduler_cfg.type}")
+
+
+DINOv3LinearProbeSegModule = LinearProbeSegModule
