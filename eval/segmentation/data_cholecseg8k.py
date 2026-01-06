@@ -121,24 +121,17 @@ class CholecSeg8kDataModule(pl.LightningDataModule):
     def setup(self, stage: str | None = None) -> None:
         root = Path(self.cfg.root)
         video_dirs = _collect_video_dirs(root)
-        video_names = [p.name for p in video_dirs]
-        rng = random.Random(self.cfg.split_seed)
-        rng.shuffle(video_names)
-
+        all_samples = _build_samples_for_videos(video_dirs)
         if len(self.cfg.val_videos) > 0:
-            val_video_names = list(self.cfg.val_videos)
+            val_video_set = set(self.cfg.val_videos)
+            train_samples = [sample for sample in all_samples if sample[2] not in val_video_set]
+            val_samples = [sample for sample in all_samples if sample[2] in val_video_set]
         else:
-            val_count = int(len(video_names) * float(self.cfg.val_ratio))
-            val_video_names = video_names[:val_count]
-
-        val_video_set = set(val_video_names)
-        train_video_dirs = [
-            root / name for name in video_names if name not in val_video_set
-        ]
-        val_video_dirs = [root / name for name in video_names if name in val_video_set]
-
-        train_samples = _build_samples_for_videos(train_video_dirs)
-        val_samples = _build_samples_for_videos(val_video_dirs)
+            rng = random.Random(self.cfg.split_seed)
+            rng.shuffle(all_samples)
+            val_count = int(len(all_samples) * float(self.cfg.val_ratio))
+            val_samples = all_samples[:val_count]
+            train_samples = all_samples[val_count:]
 
         self.train_dataset = CholecSeg8kDataset(
             train_samples,

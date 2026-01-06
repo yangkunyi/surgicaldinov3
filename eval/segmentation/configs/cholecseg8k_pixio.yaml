@@ -38,8 +38,10 @@ model:
     repo_dir: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/pixio/pixio"
     model_name: "pixio_vitl16"
     pretrained_weights_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/pixio/checkpoints/pixio_vitl16.pth"
+    trained_checkpoint: null
     layer_indices: [5, 11, 17, 23]
     norm: true
+    freeze_backbone: true
 
   head:
     use_batchnorm: true

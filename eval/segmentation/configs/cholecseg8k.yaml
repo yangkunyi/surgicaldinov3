@@ -16,7 +16,7 @@ data:
   persistent_workers: true
   drop_last: true
 
-  # Video-level split: either specify val_videos or use val_ratio + split_seed.
+  # Frame-level split: either specify val_videos or use val_ratio + split_seed.
   val_videos: []
   val_ratio: 0.2
   split_seed: 42
@@ -42,6 +42,7 @@ model:
     trained_checkpoint: null
     layer_indices: [2, 5, 8, 11]
     norm: true
+    freeze_backbone: true
 
   head:
     use_batchnorm: true

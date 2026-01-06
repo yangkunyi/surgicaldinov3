@@ -84,25 +84,36 @@ class DINOv3FeatureAdapter(nn.Module):
         backbone: nn.Module,
         layer_indices: Sequence[int],
         use_cls_token: bool,
+        freeze_backbone: bool,
         norm: bool = True,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.layer_indices = tuple(int(i) for i in layer_indices)
         self.use_cls_token = bool(use_cls_token)
+        self.freeze_backbone = bool(freeze_backbone)
         self.norm = bool(norm)
 
     def forward(self, images: Tensor):
-        with torch.inference_mode():
-            feats = self.backbone.get_intermediate_layers(
-                images,
-                n=self.layer_indices,
-                reshape=True,
-                return_class_token=self.use_cls_token,
-                return_extra_tokens=False,
-                norm=self.norm,
-            )
-        return feats
+        if self.freeze_backbone:
+            with torch.inference_mode():
+                feats = self.backbone.get_intermediate_layers(
+                    images,
+                    n=self.layer_indices,
+                    reshape=True,
+                    return_class_token=self.use_cls_token,
+                    return_extra_tokens=False,
+                    norm=self.norm,
+                )
+            return feats
+        return self.backbone.get_intermediate_layers(
+            images,
+            n=self.layer_indices,
+            reshape=True,
+            return_class_token=self.use_cls_token,
+            return_extra_tokens=False,
+            norm=self.norm,
+        )
 
 
 class PixioFeatureAdapter(nn.Module):
@@ -113,17 +124,22 @@ class PixioFeatureAdapter(nn.Module):
         backbone: nn.Module,
         layer_indices: Sequence[int],
         use_cls_token: bool,
+        freeze_backbone: bool,
         norm: bool = True,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.layer_indices = tuple(int(i) for i in layer_indices)
         self.use_cls_token = bool(use_cls_token)
+        self.freeze_backbone = bool(freeze_backbone)
         self.norm = bool(norm)
 
     def forward(self, images: Tensor):
-        with torch.inference_mode():
-            block_ids = sorted(self.layer_indices)
+        block_ids = sorted(self.layer_indices)
+        if self.freeze_backbone:
+            with torch.inference_mode():
+                feats = self.backbone(images, block_ids=block_ids)
+        else:
             feats = self.backbone(images, block_ids=block_ids)
 
         patch_h = int(self.backbone.patch_embed.patch_size[0])

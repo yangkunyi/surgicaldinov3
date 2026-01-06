@@ -59,9 +59,11 @@ class LinearProbeSegModule(pl.LightningModule):
         self.num_classes = int(num_classes)
         self.wandb_log_masks = bool(wandb_log_masks)
         self.wandb_log_interval = int(wandb_log_interval)
+        self.freeze_backbone = bool(backbone_cfg.freeze_backbone)
 
         self.backbone = self._build_backbone(backbone_cfg)
-        self._freeze_backbone()
+        if self.freeze_backbone:
+            self._freeze_backbone()
 
         embed_dim = int(self.backbone.embed_dim)
         in_channels = [embed_dim for _ in backbone_cfg.layer_indices]
@@ -70,6 +72,7 @@ class LinearProbeSegModule(pl.LightningModule):
                 backbone=self.backbone,
                 layer_indices=backbone_cfg.layer_indices,
                 use_cls_token=head_cfg.use_cls_token,
+                freeze_backbone=self.freeze_backbone,
                 norm=backbone_cfg.norm,
             )
         elif backbone_cfg.type.lower() == "pixio":
@@ -77,6 +80,7 @@ class LinearProbeSegModule(pl.LightningModule):
                 backbone=self.backbone,
                 layer_indices=backbone_cfg.layer_indices,
                 use_cls_token=head_cfg.use_cls_token,
+                freeze_backbone=self.freeze_backbone,
                 norm=backbone_cfg.norm,
             )
         else:
@@ -165,6 +169,12 @@ class LinearProbeSegModule(pl.LightningModule):
         if cfg.pretrained_weights_path:
             pretrained = _resolve_path(cfg.pretrained_weights_path)
         backbone = model_fn(pretrained=pretrained)
+        if cfg.trained_checkpoint:
+            ckpt_path = _resolve_path(cfg.trained_checkpoint)
+            state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            model_state = state["model"]
+            incompatible = backbone.load_state_dict(model_state, strict=False)
+            print(f"Pixio trained_checkpoint mismatch keys: missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}")
         backbone.embed_dim = int(backbone.patch_embed.proj.out_channels)
         return backbone
 
@@ -175,7 +185,8 @@ class LinearProbeSegModule(pl.LightningModule):
 
     def train(self, mode: bool = True):  # type: ignore[override]
         super().train(mode)
-        self.backbone.eval()
+        if self.freeze_backbone:
+            self.backbone.eval()
         return self
 
     def forward(self, images: Tensor) -> Tensor:  # type: ignore[override]
@@ -348,8 +359,11 @@ class LinearProbeSegModule(pl.LightningModule):
         )
 
     def configure_optimizers(self):  # type: ignore[override]
+        params = list(self.head.parameters())
+        if not self.freeze_backbone:
+            params = list(self.backbone.parameters()) + params
         optimizer = torch.optim.AdamW(
-            self.head.parameters(),
+            params,
             lr=float(self.optimizer_cfg.lr),
             betas=(float(self.optimizer_cfg.beta1), float(self.optimizer_cfg.beta2)),
             weight_decay=float(self.optimizer_cfg.weight_decay),
