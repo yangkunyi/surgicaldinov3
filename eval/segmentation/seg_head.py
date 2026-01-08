@@ -158,3 +158,27 @@ class PixioFeatureAdapter(nn.Module):
             else:
                 out.append(patch_map)
         return out
+
+
+class SAM2FeatureAdapter(nn.Module):
+    """Extracts FPN features from a SAM2 image encoder."""
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        layer_indices: Sequence[int],
+        freeze_backbone: bool,
+    ) -> None:
+        super().__init__()
+        self.backbone = backbone
+        self.layer_indices = tuple(int(i) for i in layer_indices)
+        self.freeze_backbone = bool(freeze_backbone)
+
+    def forward(self, images: Tensor):
+        if self.freeze_backbone:
+            with torch.inference_mode():
+                backbone_out = self.backbone(images)
+        else:
+            backbone_out = self.backbone(images)
+        features = backbone_out["backbone_fpn"]
+        return [features[i] for i in self.layer_indices]

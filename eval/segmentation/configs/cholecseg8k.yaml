@@ -26,12 +26,14 @@ data:
     min_size: [448, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
     crop_size: 448
     flip_prob: 0.5
+    pad_to_multiple: 1
 
   val:
     short_side: 512
     max_size: 1024
     center_crop: false
     crop_size: 512
+    pad_to_multiple: 1
 
 model:
   backbone:

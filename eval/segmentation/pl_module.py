@@ -10,8 +10,18 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from colormap import CLASS_NAME_MAPPING, COLOR_CLASS_MAPPING, IMAGENET_MEAN, IMAGENET_STD
-from seg_head import DINOv3FeatureAdapter, LinearHead, PixioFeatureAdapter
+from colormap import (
+    CLASS_NAME_MAPPING,
+    COLOR_CLASS_MAPPING,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+)
+from seg_head import (
+    DINOv3FeatureAdapter,
+    LinearHead,
+    PixioFeatureAdapter,
+    SAM2FeatureAdapter,
+)
 from seg_loss import SegmentationLoss
 from seg_metrics import calculate_intersect_and_union, compute_iou_and_acc
 
@@ -83,6 +93,12 @@ class LinearProbeSegModule(pl.LightningModule):
                 freeze_backbone=self.freeze_backbone,
                 norm=backbone_cfg.norm,
             )
+        elif backbone_cfg.type.lower() == "sam2":
+            self.feature_adapter = SAM2FeatureAdapter(
+                backbone=self.backbone,
+                layer_indices=backbone_cfg.layer_indices,
+                freeze_backbone=self.freeze_backbone,
+            )
         else:
             raise ValueError(f"Unsupported backbone.type: {backbone_cfg.type}")
         self.head = LinearHead(
@@ -123,6 +139,8 @@ class LinearProbeSegModule(pl.LightningModule):
             return self._build_dinov3_backbone(cfg)
         if cfg.type.lower() == "pixio":
             return self._build_pixio_backbone(cfg)
+        if cfg.type.lower() == "sam2":
+            return self._build_sam2_backbone(cfg)
         raise ValueError(f"Unsupported backbone.type: {cfg.type}")
 
     def _build_dinov3_backbone(self, cfg: Any) -> nn.Module:
@@ -143,7 +161,8 @@ class LinearProbeSegModule(pl.LightningModule):
             teacher: Mapping[str, Tensor] = state["teacher"]
             prefix = "backbone."
             new_state: "OrderedDict[str, Tensor]" = OrderedDict(
-                (k[len(prefix) :] if k.startswith(prefix) else k, v) for k, v in teacher.items()
+                (k[len(prefix) :] if k.startswith(prefix) else k, v)
+                for k, v in teacher.items()
             )
             backbone.load_state_dict(new_state, strict=False)
 
@@ -174,8 +193,38 @@ class LinearProbeSegModule(pl.LightningModule):
             state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
             model_state = state["model"]
             incompatible = backbone.load_state_dict(model_state, strict=False)
-            print(f"Pixio trained_checkpoint mismatch keys: missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}")
+            print(
+                f"Pixio trained_checkpoint mismatch keys: missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}"
+            )
         backbone.embed_dim = int(backbone.patch_embed.proj.out_channels)
+        return backbone
+
+    def _build_sam2_backbone(self, cfg: Any) -> nn.Module:
+        import sys
+
+        from hydra.utils import instantiate
+        from omegaconf import OmegaConf
+
+        repo_dir = _resolve_path(cfg.repo_dir)
+        sys.path.insert(0, repo_dir)
+        try:
+            config_path = _resolve_path(cfg.config_path)
+            sam2_cfg = OmegaConf.load(config_path)
+            OmegaConf.resolve(sam2_cfg)
+            image_encoder_cfg = sam2_cfg.model.image_encoder
+            backbone = instantiate(image_encoder_cfg, _recursive_=True)
+        finally:
+            sys.path.pop(0)
+
+        weights_path = _resolve_path(cfg.pretrained_weights_path)
+        state = torch.load(weights_path, map_location="cpu")
+        model_state = state["model"]
+        prefix = "image_encoder."
+        new_state: "OrderedDict[str, Tensor]" = OrderedDict(
+            (k[len(prefix) :], v) for k, v in model_state.items() if k.startswith(prefix)
+        )
+        backbone.load_state_dict(new_state)
+        backbone.embed_dim = int(backbone.neck.d_model)
         return backbone
 
     def _freeze_backbone(self) -> None:
@@ -192,7 +241,9 @@ class LinearProbeSegModule(pl.LightningModule):
     def forward(self, images: Tensor) -> Tensor:  # type: ignore[override]
         feats = self.feature_adapter(images)
         logits = self.head(feats)
-        logits = F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        logits = F.interpolate(
+            logits, size=images.shape[-2:], mode="bilinear", align_corners=False
+        )
         return logits
 
     def training_step(self, batch: dict[str, Any], batch_idx: int) -> Tensor:  # type: ignore[override]
@@ -232,11 +283,13 @@ class LinearProbeSegModule(pl.LightningModule):
         loss = self.loss_fn(logits, masks)
 
         preds = logits.argmax(dim=1)
-        area_intersect, area_union, area_pred, area_label = calculate_intersect_and_union(
-            preds,
-            masks,
-            num_classes=self.num_classes,
-            ignore_index=self.ignore_index,
+        area_intersect, area_union, area_pred, area_label = (
+            calculate_intersect_and_union(
+                preds,
+                masks,
+                num_classes=self.num_classes,
+                ignore_index=self.ignore_index,
+            )
         )
 
         self.val_area_intersect += area_intersect.to(torch.float64)
@@ -276,8 +329,22 @@ class LinearProbeSegModule(pl.LightningModule):
         iou, acc, aacc = compute_iou_and_acc(area_intersect, area_union, area_label)
         miou = iou.nanmean()
 
-        self.log("val/mIoU", miou, prog_bar=True, on_step=False, on_epoch=True, rank_zero_only=True)
-        self.log("val/aAcc", aacc, prog_bar=True, on_step=False, on_epoch=True, rank_zero_only=True)
+        self.log(
+            "val/mIoU",
+            miou,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            rank_zero_only=True,
+        )
+        self.log(
+            "val/aAcc",
+            aacc,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            rank_zero_only=True,
+        )
 
         if self.trainer.is_global_zero:
             import wandb
@@ -285,8 +352,12 @@ class LinearProbeSegModule(pl.LightningModule):
             table = wandb.Table(columns=["class_id", "class_name", "iou"])
             iou_cpu = iou.detach().float().cpu()
             for class_id in range(self.num_classes):
-                table.add_data(class_id, CLASS_NAME_MAPPING[class_id], float(iou_cpu[class_id]))
-            self.logger.experiment.log({"val/per_class_iou": table}, step=self.global_step)
+                table.add_data(
+                    class_id, CLASS_NAME_MAPPING[class_id], float(iou_cpu[class_id])
+                )
+            self.logger.experiment.log(
+                {"val/per_class_iou": table}, step=self.global_step
+            )
 
     def _maybe_log_wandb_masks(
         self,
@@ -302,7 +373,9 @@ class LinearProbeSegModule(pl.LightningModule):
             return
         if not self.trainer.is_global_zero:
             return
-        if (int(self.global_step) % int(self.wandb_log_interval)) != 0:
+        if (int(self.global_step) % int(self.wandb_log_interval)) != 0 and (
+            split == "train"
+        ):
             return
         if split == "val" and batch_idx != 0:
             return
@@ -315,7 +388,9 @@ class LinearProbeSegModule(pl.LightningModule):
         image = (image * std + mean).clamp(0.0, 1.0)
         image = (image * 255.0).to(torch.uint8).permute(1, 2, 0).numpy()
 
-        class_color_mapping = {class_id: color for color, class_id in COLOR_CLASS_MAPPING.items()}
+        class_color_mapping = {
+            class_id: color for color, class_id in COLOR_CLASS_MAPPING.items()
+        }
 
         import numpy as np
 
@@ -324,15 +399,25 @@ class LinearProbeSegModule(pl.LightningModule):
 
         color_lut = np.zeros((256, 3), dtype=np.uint8)
         for class_id in range(self.num_classes):
-            color_lut[class_id] = np.asarray(class_color_mapping[class_id], dtype=np.uint8)
+            color_lut[class_id] = np.asarray(
+                class_color_mapping[class_id], dtype=np.uint8
+            )
         color_lut[self.ignore_index] = np.asarray((255, 0, 255), dtype=np.uint8)
         gt_canvas = color_lut[gt_mask]
         pred_canvas = color_lut[pred_mask]
 
         alpha = 0.5
         image_f = image.astype(np.float32)
-        gt_overlay = (image_f * (1.0 - alpha) + gt_canvas.astype(np.float32) * alpha).round().astype(np.uint8)
-        pred_overlay = (image_f * (1.0 - alpha) + pred_canvas.astype(np.float32) * alpha).round().astype(np.uint8)
+        gt_overlay = (
+            (image_f * (1.0 - alpha) + gt_canvas.astype(np.float32) * alpha)
+            .round()
+            .astype(np.uint8)
+        )
+        pred_overlay = (
+            (image_f * (1.0 - alpha) + pred_canvas.astype(np.float32) * alpha)
+            .round()
+            .astype(np.uint8)
+        )
 
         gt_boundary = np.zeros(gt_mask.shape, dtype=bool)
         pred_boundary = np.zeros(pred_mask.shape, dtype=bool)
@@ -352,8 +437,12 @@ class LinearProbeSegModule(pl.LightningModule):
         caption = f"{split} step={int(self.global_step)} image={batch['image_path'][0]} mask={batch['mask_path'][0]}"
         self.logger.experiment.log(
             {
-                f"{split}/overlay_ground_truth": wandb.Image(gt_overlay, caption=caption),
-                f"{split}/overlay_prediction": wandb.Image(pred_overlay, caption=caption),
+                f"{split}/overlay_ground_truth": wandb.Image(
+                    gt_overlay, caption=caption
+                ),
+                f"{split}/overlay_prediction": wandb.Image(
+                    pred_overlay, caption=caption
+                ),
             },
             step=self.global_step,
         )
@@ -402,10 +491,14 @@ class LinearProbeSegModule(pl.LightningModule):
             def lr_lambda(step: int) -> float:
                 if step < warmup_steps:
                     return float(step + 1) / float(warmup_steps)
-                progress = float(step - warmup_steps) / float(total_steps - warmup_steps)
+                progress = float(step - warmup_steps) / float(
+                    total_steps - warmup_steps
+                )
                 return 0.5 * (1.0 + math.cos(math.pi * progress))
 
-            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer, lr_lambda=lr_lambda
+            )
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {

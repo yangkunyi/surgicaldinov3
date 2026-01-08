@@ -6,6 +6,7 @@ from typing import Any, Sequence
 
 import lightning as pl
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import tv_tensors
@@ -53,6 +54,21 @@ class CholecSeg8kDataset(Dataset[dict[str, Any]]):
         }
 
 
+class PadToMultiple:
+    def __init__(self, multiple: int, *, image_fill: float, mask_fill: int) -> None:
+        self.multiple = int(multiple)
+        self.image_fill = float(image_fill)
+        self.mask_fill = int(mask_fill)
+
+    def __call__(self, image: torch.Tensor, mask: torch.Tensor):
+        _, h, w = image.shape
+        pad_h = (self.multiple - h % self.multiple) % self.multiple
+        pad_w = (self.multiple - w % self.multiple) % self.multiple
+        image = F.pad(image, (0, pad_w, 0, pad_h), value=self.image_fill)
+        mask = F.pad(mask, (0, pad_w, 0, pad_h), value=self.mask_fill)
+        return tv_tensors.Image(image), tv_tensors.Mask(mask)
+
+
 def _build_train_transforms(cfg: Any) -> Any:
     return v2.Compose(
         [
@@ -64,6 +80,11 @@ def _build_train_transforms(cfg: Any) -> Any:
             ),
             v2.RandomCrop(size=(cfg.train.crop_size, cfg.train.crop_size)),
             v2.RandomHorizontalFlip(p=cfg.train.flip_prob),
+            PadToMultiple(
+                cfg.train.pad_to_multiple,
+                image_fill=0.0,
+                mask_fill=255,
+            ),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
@@ -82,6 +103,13 @@ def _build_val_transforms(cfg: Any) -> Any:
     ]
     if cfg.val.center_crop:
         transforms.append(v2.CenterCrop(size=(cfg.val.crop_size, cfg.val.crop_size)))
+    transforms.append(
+        PadToMultiple(
+            cfg.val.pad_to_multiple,
+            image_fill=0.0,
+            mask_fill=255,
+        )
+    )
     transforms.extend(
         [
             v2.ToDtype(torch.float32, scale=True),

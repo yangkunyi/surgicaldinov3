@@ -1,0 +1,101 @@
+seed: 42
+
+run_name: "cholecseg8k_linprobe_seg_sam2_large"
+wandb_run_name: "${run_name}-${oc.env:OAR_JOB_ID}"
+
+paths:
+  logs_root: "logs"
+
+data:
+  root: "/bd_byta6000i0/users/dataset/MedicalImage/CholecSeg8k/raw"
+  num_classes: 13
+  batch_size: 16
+  val_batch_size: 16
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  drop_last: true
+
+  val_videos: []
+  val_ratio: 0.2
+  split_seed: 42
+  debug_unknown_masks_dir: ""
+
+  train:
+    min_size: [448, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
+    crop_size: 448
+    flip_prob: 0.5
+    pad_to_multiple: 32
+
+  val:
+    short_side: 512
+    max_size: 1024
+    center_crop: false
+    crop_size: 512
+    pad_to_multiple: 32
+
+model:
+  backbone:
+    type: "sam2"
+    repo_dir: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/sam2"
+    config_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
+    pretrained_weights_path: "/bd_byta6000i0/users/surgicaldinov2/kyyang/surgicaldinov3/sam2/checkpoints/sam2.1_hiera_large.pt"
+    layer_indices: [0, 1, 2]
+    freeze_backbone: true
+
+  head:
+    use_batchnorm: true
+    use_cls_token: false
+    dropout: 0.1
+
+loss:
+  ignore_index: 255
+  ce_weight: 1.0
+  dice_weight: 0.0
+  dice_smooth: 1.0
+  dice_exponent: 2.0
+
+optimizer:
+  lr: 5.0e-4
+  beta1: 0.9
+  beta2: 0.999
+  weight_decay: 1.0e-4
+
+scheduler:
+  type: "warmup_cosine"
+  warmup_fraction: 0.02
+  final_div_factor: 1000.0
+  base_momentum: 0.85
+  max_momentum: 0.95
+
+trainer:
+  _target_: lightning.pytorch.Trainer
+  accelerator: "gpu"
+  devices: 1
+  precision: "32"
+  max_epochs: 20
+  log_every_n_steps: 10
+  val_check_interval: 1.0
+  default_root_dir: "${paths.logs_root}/lightning/${run_name}-${oc.env:OAR_JOB_ID}"
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.TQDMProgressBar
+    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      monitor: "val/mIoU"
+      mode: "max"
+      save_last: true
+      filename: "epoch{epoch}-step{step}"
+
+wandb:
+  project: "cholecseg8k-segmentation"
+  entity: null
+  tags: ["CholecSeg8k", "sam2", "sam2.1", "hiera_large", "segmentation", "linear-probe"]
+  log_model: false
+  offline: true
+  log_masks: false
+  log_interval: 200
+
+hydra:
+  run:
+    dir: "${paths.logs_root}/hydra/${run_name}-${oc.env:OAR_JOB_ID}/"
+  job:
+    chdir: false
