@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from dinov3.utils import cat_keep_shapes, uncat_with_shapes
+from .lora import build_lora_linear
 
 
 class ListForwardMixin(object):
@@ -30,14 +31,41 @@ class Mlp(nn.Module, ListForwardMixin):
         act_layer: Callable[..., nn.Module] = nn.GELU,
         drop: float = 0.0,
         bias: bool = True,
+        lora_rank: int = 0,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
+        lora_targets: List[str] | None = None,
         device=None,
     ) -> None:
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias, device=device)
+        lora_targets = set(lora_targets or [])
+        use_fc1 = lora_rank > 0 and ("mlp" in lora_targets or "ffn" in lora_targets or "fc1" in lora_targets)
+        use_fc2 = lora_rank > 0 and ("mlp" in lora_targets or "ffn" in lora_targets or "fc2" in lora_targets)
+        self.fc1 = build_lora_linear(
+            in_features,
+            hidden_features,
+            bias=bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_fc1,
+            base_layer=nn.Linear,
+            device=device,
+        )
         self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias, device=device)
+        self.fc2 = build_lora_linear(
+            hidden_features,
+            out_features,
+            bias=bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_fc2,
+            base_layer=nn.Linear,
+            device=device,
+        )
         self.drop = nn.Dropout(drop)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -59,6 +87,10 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         drop: float = 0.0,
         bias: bool = True,
         align_to: int = 8,
+        lora_rank: int = 0,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
+        lora_targets: List[str] | None = None,
         device=None,
     ) -> None:
         super().__init__()
@@ -66,9 +98,43 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         hidden_features = hidden_features or in_features
         d = int(hidden_features * 2 / 3)
         swiglu_hidden_features = d + (-d % align_to)
-        self.w1 = nn.Linear(in_features, swiglu_hidden_features, bias=bias, device=device)
-        self.w2 = nn.Linear(in_features, swiglu_hidden_features, bias=bias, device=device)
-        self.w3 = nn.Linear(swiglu_hidden_features, out_features, bias=bias, device=device)
+        lora_targets = set(lora_targets or [])
+        use_w1 = lora_rank > 0 and ("mlp" in lora_targets or "ffn" in lora_targets or "w1" in lora_targets)
+        use_w2 = lora_rank > 0 and ("mlp" in lora_targets or "ffn" in lora_targets or "w2" in lora_targets)
+        use_w3 = lora_rank > 0 and ("mlp" in lora_targets or "ffn" in lora_targets or "w3" in lora_targets)
+        self.w1 = build_lora_linear(
+            in_features,
+            swiglu_hidden_features,
+            bias=bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_w1,
+            base_layer=nn.Linear,
+            device=device,
+        )
+        self.w2 = build_lora_linear(
+            in_features,
+            swiglu_hidden_features,
+            bias=bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_w2,
+            base_layer=nn.Linear,
+            device=device,
+        )
+        self.w3 = build_lora_linear(
+            swiglu_hidden_features,
+            out_features,
+            bias=bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_w3,
+            base_layer=nn.Linear,
+            device=device,
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         x1 = self.w1(x)

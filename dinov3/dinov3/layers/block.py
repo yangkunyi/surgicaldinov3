@@ -36,6 +36,10 @@ class SelfAttentionBlock(nn.Module):
         attn_class: Callable[..., nn.Module] = SelfAttention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
         mask_k_bias: bool = False,
+        lora_rank: int = 0,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
+        lora_targets: List[str] | None = None,
         device=None,
     ) -> None:
         super().__init__()
@@ -49,6 +53,10 @@ class SelfAttentionBlock(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
             mask_k_bias=mask_k_bias,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_targets=lora_targets,
             device=device,
         )
         self.ls1 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
@@ -61,6 +69,10 @@ class SelfAttentionBlock(nn.Module):
             act_layer=act_layer,
             drop=drop,
             bias=ffn_bias,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_targets=lora_targets,
             device=device,
         )
         self.ls2 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()

@@ -38,6 +38,16 @@ dtype_dict = {
 
 
 def init_weights_vit(module: nn.Module, name: str = ""):
+    if name.endswith("lora_A"):
+        nn.init.normal_(module.weight, std=0.01)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+        return
+    if name.endswith("lora_B"):
+        nn.init.zeros_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+        return
     if isinstance(module, nn.Linear):
         torch.nn.init.trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
@@ -86,6 +96,10 @@ class DinoVisionTransformer(nn.Module):
         mask_k_bias: bool = False,
         untie_cls_and_patch_norms: bool = False,
         untie_global_and_local_cls_norm: bool = False,
+        lora_rank: int = 0,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
+        lora_target_modules: Sequence[str] | None = None,
         device: Any | None = None,
         **ignored_kwargs,
     ):
@@ -137,6 +151,7 @@ class DinoVisionTransformer(nn.Module):
         logger.info(f"using {ffn_layer} layer as FFN")
         ffn_layer_cls = ffn_layer_dict[ffn_layer]
         ffn_ratio_sequence = [ffn_ratio] * depth
+        lora_targets = list(lora_target_modules or [])
         blocks_list = [
             SelfAttentionBlock(
                 dim=embed_dim,
@@ -151,6 +166,10 @@ class DinoVisionTransformer(nn.Module):
                 ffn_layer=ffn_layer_cls,
                 init_values=layerscale_init,
                 mask_k_bias=mask_k_bias,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                lora_targets=lora_targets,
                 device=device,
             )
             for i in range(depth)

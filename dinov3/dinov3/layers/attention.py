@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from dinov3.utils import cat_keep_shapes, uncat_with_shapes
 from torch import Tensor, nn
 
+from .lora import build_lora_linear
+
 
 # RoPE-related functions:
 def rope_rotate_half(x: Tensor) -> Tensor:
@@ -50,6 +52,10 @@ class SelfAttention(nn.Module):
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
         mask_k_bias: bool = False,
+        lora_rank: int = 0,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
+        lora_targets: Tuple[str, ...] | None = None,
         device=None,
     ) -> None:
         super().__init__()
@@ -58,9 +64,32 @@ class SelfAttention(nn.Module):
         self.scale = head_dim**-0.5
 
         linear_class = LinearKMaskedBias if mask_k_bias else nn.Linear
-        self.qkv = linear_class(dim, dim * 3, bias=qkv_bias, device=device)
+        lora_targets = set(lora_targets or ())
+        use_qkv = lora_rank > 0 and ("qkv" in lora_targets or "attn" in lora_targets)
+        use_proj = lora_rank > 0 and ("proj" in lora_targets or "attn" in lora_targets)
+        self.qkv = build_lora_linear(
+            dim,
+            dim * 3,
+            bias=qkv_bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_qkv,
+            base_layer=linear_class,
+            device=device,
+        )
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim, bias=proj_bias, device=device)
+        self.proj = build_lora_linear(
+            dim,
+            dim,
+            bias=proj_bias,
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_lora=use_proj,
+            base_layer=nn.Linear,
+            device=device,
+        )
         self.proj_drop = nn.Dropout(proj_drop)
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:

@@ -123,6 +123,15 @@ student:
   pos_embed_rope_jitter_coords: null
   pos_embed_rope_rescale_coords: null
   pos_embed_rope_dtype: bf16
+  lora:
+    enabled: false
+    rank: 8
+    alpha: 16
+    dropout: 0.0
+    train_lora_only: false
+    target_modules:
+    - qkv
+    - proj
   fp8_enabled: False  # Convert Linear layers to operate in fp8 precision
   fp8_filter: "blocks"  # Regex that must appear in module path; empty means everything
 teacher:
