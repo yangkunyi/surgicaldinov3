@@ -39,7 +39,7 @@ from dinov3.logging import MetricLogger, setup_logging
 from dinov3.train.cosine_lr_scheduler import CosineScheduler, linear_warmup_cosine_decay
 from dinov3.train.multidist_meta_arch import MultiDistillationMetaArch
 from dinov3.train.ssl_meta_arch import SSLMetaArch
-from dinov3.utils import adapt_ckpt_for_module
+from dinov3.utils import adapt_ckpt_for_module, adapt_state_dict_for_lora
 from omegaconf import OmegaConf
 
 try:
@@ -242,6 +242,15 @@ def apply_optim_scheduler(optimizer, lr, wd, last_layer_lr):
             param_group["lr"] = last_layer_lr * lr_multiplier
         else:
             param_group["lr"] = lr * lr_multiplier
+
+
+def log_loaded_state_dict_keys(tag, state_dict, incompatible_keys):
+    loaded_keys = sorted(set(state_dict.keys()) - set(incompatible_keys.unexpected_keys))
+    logger.info(f"{tag} loaded keys ({len(loaded_keys)}): {loaded_keys}")
+    logger.info(f"{tag} missing keys ({len(incompatible_keys.missing_keys)}): {incompatible_keys.missing_keys}")
+    logger.info(
+        f"{tag} unexpected keys ({len(incompatible_keys.unexpected_keys)}): {incompatible_keys.unexpected_keys}"
+    )
 
 
 def do_test(cfg, model, iteration, process_group, do_low_freq=False):
@@ -461,16 +470,20 @@ def do_train(cfg, model, resume=False):
     model.init_weights()
     if cfg.student.pretrained_weights and cfg.student.pretrained_weights != "":
         pretrained_weights = torch.load(cfg.student.pretrained_weights, weights_only=True)
+        if cfg.student.lora.enabled:
+            pretrained_weights = adapt_state_dict_for_lora(pretrained_weights)
         # STUDENT
         student_ckpt = adapt_ckpt_for_module(model.student.backbone, pretrained_weights)
         incompatible_keys_student = model.student.backbone.load_state_dict(student_ckpt, strict=False)
         logger.info(f"Pretrained weights found at {cfg.student.pretrained_weights} and loaded")
         logger.info(f"Incompatible keys in student: {incompatible_keys_student}")
+        log_loaded_state_dict_keys("Student pretrained weights", student_ckpt, incompatible_keys_student)
 
         # TEACHER
         teacher_ckpt = adapt_ckpt_for_module(model.teacher.backbone, pretrained_weights)
         incompatible_keys_teacher = model.teacher.backbone.load_state_dict(teacher_ckpt, strict=False)
         logger.info(f"Incompatible keys in teacher: {incompatible_keys_teacher}")
+        log_loaded_state_dict_keys("Teacher pretrained weights", teacher_ckpt, incompatible_keys_teacher)
 
         if model.feature_anchor_enabled:
             model.init_feature_anchor_teacher()

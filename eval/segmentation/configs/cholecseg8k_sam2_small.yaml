@@ -1,7 +1,7 @@
 seed: 42
 
 run_name: "cholecseg8k_linprobe_seg_sam2_small"
-wandb_run_name: "${run_name}-${oc.env:OAR_JOB_ID}"
+wandb_run_name: "${run_name}-${oc.env:SLURM_JOB_ID}"
 
 paths:
   logs_root: "logs"
@@ -76,7 +76,7 @@ trainer:
   max_epochs: 20
   log_every_n_steps: 10
   val_check_interval: 1.0
-  default_root_dir: "${paths.logs_root}/lightning/${run_name}-${oc.env:OAR_JOB_ID}"
+  default_root_dir: "${paths.logs_root}/lightning/${run_name}-${oc.env:SLURM_JOB_ID}"
   callbacks:
     - _target_: lightning.pytorch.callbacks.TQDMProgressBar
     - _target_: lightning.pytorch.callbacks.ModelCheckpoint
@@ -96,6 +96,6 @@ wandb:
 
 hydra:
   run:
-    dir: "${paths.logs_root}/hydra/${run_name}-${oc.env:OAR_JOB_ID}/"
+    dir: "${paths.logs_root}/hydra/${run_name}-${oc.env:SLURM_JOB_ID}/"
   job:
     chdir: false

@@ -72,6 +72,14 @@ class LinearProbeSegModule(pl.LightningModule):
         self.freeze_backbone = bool(backbone_cfg.freeze_backbone)
 
         self.backbone = self._build_backbone(backbone_cfg)
+        if backbone_cfg.type.lower() == "dinov3" and bool(
+            backbone_cfg.lora.train_lora_only
+        ):
+            if self.freeze_backbone:
+                raise ValueError(
+                    "freeze_backbone must be false when training LoRA weights."
+                )
+            self._enable_lora_training()
         if self.freeze_backbone:
             self._freeze_backbone()
 
@@ -148,12 +156,91 @@ class LinearProbeSegModule(pl.LightningModule):
 
         repo_dir = _resolve_path(cfg.repo_dir)
         weights_path = _resolve_path(cfg.pretrained_weights_path)
-        backbone = torch.hub.load(
-            repo_dir,
-            cfg.hub_name,
-            source="local",
-            weights=weights_path,
-        )
+        use_lora = bool(cfg.lora.enabled)
+
+        def log_state_dict_keys(
+            tag: str,
+            state_dict: dict[str, Tensor],
+            model_state: dict[str, Tensor],
+            missing_keys: list[str],
+            unexpected_keys: list[str],
+        ) -> None:
+            loaded_keys = [k for k in state_dict if k in model_state]
+            print(f"{tag} loaded keys ({len(loaded_keys)}): {loaded_keys}")
+            print(f"{tag} missing keys ({len(missing_keys)}): {missing_keys}")
+            print(f"{tag} unexpected keys ({len(unexpected_keys)}): {unexpected_keys}")
+
+        if use_lora:
+            backbone = torch.hub.load(
+                repo_dir,
+                cfg.hub_name,
+                source="local",
+                pretrained=False,
+                lora_rank=int(cfg.lora.rank),
+                lora_alpha=float(cfg.lora.alpha),
+                lora_dropout=float(cfg.lora.dropout),
+                lora_target_modules=list(cfg.lora.target_modules),
+            )
+        else:
+            backbone = torch.hub.load(
+                repo_dir,
+                cfg.hub_name,
+                source="local",
+                weights=weights_path,
+            )
+        model_state = backbone.state_dict()
+
+        def adapt_state_for_lora(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+            adapted = {}
+            for key, value in state_dict.items():
+                if key in model_state:
+                    adapted[key] = value
+                    continue
+                if ".base." in key:
+                    base_stripped_key = key.replace(".base.", ".", 1)
+                    if base_stripped_key in model_state:
+                        adapted[base_stripped_key] = value
+                        continue
+                if ".lora_A." in key or ".lora_B." in key:
+                    continue
+                parts = key.split(".")
+                if len(parts) > 1:
+                    base_key = ".".join(parts[:-1] + ["base", parts[-1]])
+                    if base_key in model_state:
+                        adapted[base_key] = value
+                        continue
+                adapted[key] = value
+            return adapted
+
+        base_state = torch.load(weights_path, map_location="cpu")
+        if use_lora:
+            adapted_state = adapt_state_for_lora(base_state)
+            incompatible = backbone.load_state_dict(adapted_state, strict=False)
+            missing_keys = list(incompatible.missing_keys)
+            unexpected_keys = list(incompatible.unexpected_keys)
+            log_state_dict_keys(
+                "DINOv3 base weights",
+                adapted_state,
+                model_state,
+                missing_keys,
+                unexpected_keys,
+            )
+            missing = [k for k in missing_keys if "lora_" not in k]
+            if missing or unexpected_keys:
+                raise ValueError(
+                    "Unexpected DINOv3 base weights mismatch with LoRA model: "
+                    f"missing={missing}, unexpected={unexpected_keys}"
+                )
+        else:
+            missing_keys = [k for k in model_state if k not in base_state]
+            unexpected_keys = [k for k in base_state if k not in model_state]
+            log_state_dict_keys(
+                "DINOv3 base weights",
+                base_state,
+                model_state,
+                missing_keys,
+                unexpected_keys,
+            )
 
         if cfg.trained_checkpoint:
             ckpt_path = _resolve_path(cfg.trained_checkpoint)
@@ -161,10 +248,22 @@ class LinearProbeSegModule(pl.LightningModule):
             teacher: Mapping[str, Tensor] = state["teacher"]
             prefix = "backbone."
             new_state: "OrderedDict[str, Tensor]" = OrderedDict(
-                (k[len(prefix) :] if k.startswith(prefix) else k, v)
+                (k[len(prefix) :], v)
                 for k, v in teacher.items()
+                if k.startswith(prefix)
             )
-            backbone.load_state_dict(new_state, strict=False)
+            new_state = adapt_state_for_lora(new_state)
+            model_state = backbone.state_dict()
+            incompatible = backbone.load_state_dict(new_state, strict=False)
+            missing_keys = list(incompatible.missing_keys)
+            unexpected_keys = list(incompatible.unexpected_keys)
+            log_state_dict_keys(
+                "DINOv3 trained checkpoint",
+                new_state,
+                model_state,
+                missing_keys,
+                unexpected_keys,
+            )
 
         return backbone
 
@@ -221,7 +320,9 @@ class LinearProbeSegModule(pl.LightningModule):
         model_state = state["model"]
         prefix = "image_encoder."
         new_state: "OrderedDict[str, Tensor]" = OrderedDict(
-            (k[len(prefix) :], v) for k, v in model_state.items() if k.startswith(prefix)
+            (k[len(prefix) :], v)
+            for k, v in model_state.items()
+            if k.startswith(prefix)
         )
         backbone.load_state_dict(new_state)
         backbone.embed_dim = int(backbone.neck.d_model)
@@ -231,6 +332,10 @@ class LinearProbeSegModule(pl.LightningModule):
         for p in self.backbone.parameters():
             p.requires_grad = False
         self.backbone.eval()
+
+    def _enable_lora_training(self) -> None:
+        for name, param in self.backbone.named_parameters():
+            param.requires_grad = "lora_" in name
 
     def train(self, mode: bool = True):  # type: ignore[override]
         super().train(mode)
@@ -251,6 +356,15 @@ class LinearProbeSegModule(pl.LightningModule):
         masks: Tensor = batch["mask"]
         logits = self(images)
         loss = self.loss_fn(logits, masks)
+
+        if batch_idx % 50 == 0:
+            total_batches = self.trainer.num_training_batches
+            # 打印格式：[Epoch 0 | Batch 50/1200] Loss: 0.4567
+            print(
+                f"[Epoch {self.current_epoch} | Batch {batch_idx}/{total_batches}] Loss: {loss.item():.4f}",
+                flush=True,
+            )
+
         self.log(
             "train/loss",
             loss,
@@ -346,6 +460,10 @@ class LinearProbeSegModule(pl.LightningModule):
             rank_zero_only=True,
         )
 
+        print(
+            f"Epoch {self.current_epoch} | validation miou: {miou} | validation aAcc: {aacc}",
+            flush=True,
+        )
         if self.trainer.is_global_zero:
             import wandb
 

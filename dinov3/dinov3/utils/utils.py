@@ -131,6 +131,37 @@ def has_batchnorms(model: nn.Module) -> bool:
     return False
 
 
+def adapt_state_dict_for_lora(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    adapted = {}
+    for key, value in state_dict.items():
+        if ".lora_" in key or ".base." in key:
+            adapted[key] = value
+            continue
+        if ".attn.qkv." in key:
+            adapted[key.replace(".attn.qkv.", ".attn.qkv.base.", 1)] = value
+            continue
+        if ".attn.proj." in key:
+            adapted[key.replace(".attn.proj.", ".attn.proj.base.", 1)] = value
+            continue
+        if ".mlp.fc1." in key:
+            adapted[key.replace(".mlp.fc1.", ".mlp.fc1.base.", 1)] = value
+            continue
+        if ".mlp.fc2." in key:
+            adapted[key.replace(".mlp.fc2.", ".mlp.fc2.base.", 1)] = value
+            continue
+        if ".mlp.w1." in key:
+            adapted[key.replace(".mlp.w1.", ".mlp.w1.base.", 1)] = value
+            continue
+        if ".mlp.w2." in key:
+            adapted[key.replace(".mlp.w2.", ".mlp.w2.base.", 1)] = value
+            continue
+        if ".mlp.w3." in key:
+            adapted[key.replace(".mlp.w3.", ".mlp.w3.base.", 1)] = value
+            continue
+        adapted[key] = value
+    return adapted
+
+
 def adapt_ckpt_for_module(module: torch.nn.Module, ckpt: dict):
     """
     Return a copy of `ckpt` whose tensors are converted to DTensor when the

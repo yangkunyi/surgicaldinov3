@@ -80,7 +80,7 @@ Do not import segmentation head/loss/metrics from `dinov3/dinov3/eval/segmentati
   - Lightning: `logs/lightning`
 - **Naming requirements (config-driven):**
   - `run_name` must exist in the YAML config.
-  - The log naming must include `${oc.env:OAR_JOB_ID}`.
+  - The log naming must include `${oc.env:SLURM_JOB_ID}`.
   - `wandb_run_name` must exist in the YAML config.
 
 ## 9) Acceptance Checklist

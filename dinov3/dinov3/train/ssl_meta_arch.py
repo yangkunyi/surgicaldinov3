@@ -152,6 +152,12 @@ class SSLMetaArch(nn.Module):
                     param.requires_grad = "lora_" in name
                 else:
                     param.requires_grad = True
+        if self.cfg.student.freeze_backbone:
+            if self.cfg.student.lora.enabled and self.cfg.student.lora.train_lora_only:
+                raise ValueError("student.freeze_backbone and student.lora.train_lora_only cannot both be true.")
+            for name, param in self.student.named_parameters():
+                if name.startswith("backbone."):
+                    param.requires_grad = False
 
         # Feature anchor distillation: keep a frozen copy of the (pretrained) encoder.
         self.feature_anchor_enabled = self.cfg.feature_anchor.enabled

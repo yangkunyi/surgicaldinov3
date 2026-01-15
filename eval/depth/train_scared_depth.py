@@ -35,10 +35,9 @@ from .pl_module_da3 import DA3DPTDepthModule
 import sys
 
 
-
 @hydra.main(config_path="configs", config_name="scared_depth", version_base=None)
 def main(cfg: DictConfig) -> None:
-    OAR_JOB_ID = os.getenv("OAR_JOB_ID", "000000")
+    SLURM_JOB_ID = os.getenv("SLURM_JOB_ID", "000000")
     logs_root = cfg.logs_root
     # ---------------------- loguru configuration -------------------
     os.makedirs(os.path.join(logs_root, "loguru"), exist_ok=True)
@@ -93,7 +92,7 @@ def main(cfg: DictConfig) -> None:
     wandb_logger = WandbLogger(
         project=cfg.wandb.project,
         entity=cfg.wandb.entity or None,
-        name=f"{cfg.wandb.run_name}-{OAR_JOB_ID}",
+        name=f"{cfg.wandb.run_name}-{SLURM_JOB_ID}",
         tags=list(cfg.wandb.tags),
         log_model=cfg.wandb.log_model,
         save_dir=os.path.join(logs_root, "wandb"),

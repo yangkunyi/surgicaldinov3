@@ -115,6 +115,7 @@ student:
   untie_cls_and_patch_norms: false  # If true, use separate norms for CLS/reg and patch/mask tokens
   untie_global_and_local_cls_norm: false  # If true, use separate norms for local and global crop CLS token during training
   in_chans: 3
+  freeze_backbone: false
   pos_embed_type: rope
   pos_embed_rope_base: 100.0
   pos_embed_rope_min_period: null
@@ -208,7 +209,7 @@ checkpointing:
 
 
 da3:
-  enabled: true              # Turn on DA3 MIM distillation
+  enabled: false              # Turn on DA3 MIM distillation
   loss_weight: 0.01          # Global weight for cosine distillation loss
   embed_dim: 1536             # DA3 token dimension (da3-base uses ViT-B with cat_token=True -> 2 * 768)
   projector_hidden_dim: 2048  # Hidden dim of student projector MLP

@@ -1,7 +1,7 @@
 seed: 42
 
 run_name: "cholecseg8k_linprobe_seg"
-wandb_run_name: "${run_name}-${oc.env:OAR_JOB_ID}"
+wandb_run_name: "${run_name}-${oc.env:SLURM_JOB_ID}"
 
 paths:
   logs_root: "logs"
@@ -45,6 +45,15 @@ model:
     layer_indices: [2, 5, 8, 11]
     norm: true
     freeze_backbone: true
+    lora:
+      enabled: false
+      rank: 8
+      alpha: 16
+      dropout: 0.0
+      train_lora_only: false
+      target_modules:
+        - qkv
+        - proj
 
   head:
     use_batchnorm: true
@@ -74,14 +83,15 @@ scheduler:
 trainer:
   _target_: lightning.pytorch.Trainer
   accelerator: "gpu"
+  # enable_progress_bar: False  # 核心设置：禁用进度条
   devices: 1
   precision: "32"
   max_epochs: 20
   log_every_n_steps: 10
   val_check_interval: 1.0
-  default_root_dir: "${paths.logs_root}/lightning/${run_name}-${oc.env:OAR_JOB_ID}"
+  default_root_dir: "${paths.logs_root}/lightning/${run_name}-${oc.env:SLURM_JOB_ID}"
   callbacks:
-    - _target_: lightning.pytorch.callbacks.TQDMProgressBar
+    - _target_: lightning.pytorch.callbacks.RichProgressBar
     - _target_: lightning.pytorch.callbacks.ModelCheckpoint
       monitor: "val/mIoU"
       mode: "max"
@@ -99,6 +109,6 @@ wandb:
 
 hydra:
   run:
-    dir: "${paths.logs_root}/hydra/${run_name}-${oc.env:OAR_JOB_ID}/"
+    dir: "${paths.logs_root}/hydra/${run_name}-${oc.env:SLURM_JOB_ID}/"
   job:
     chdir: false

@@ -14,5 +14,6 @@ from .utils import (
     named_replace,
     uncat_with_shapes,
     adapt_ckpt_for_module,
+    adapt_state_dict_for_lora,
 )
 from .da3_backbone import build_da3_backbone
